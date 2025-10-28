@@ -153,23 +153,23 @@ with st.sidebar:
         
         if all(columnas_esenciales):
             # PROCESAMIENTO
+            if all(columnas_esenciales):
+            # PROCESAMIENTO
             df_proc = df.copy()
-            df_proc['Fecha Original'] = df_proc[col_fecha].astype(str) # Guardar fecha original para popups
+            df_proc['Fecha Original'] = df_proc[col_fecha].astype(str)
             df_proc[col_fecha] = pd.to_datetime(df_proc[col_fecha], errors='coerce')
+            
+            # --- LÍNEAS AÑADIDAS PARA LA CORRECCIÓN ---
+            df_proc[col_lat] = pd.to_numeric(df_proc[col_lat], errors='coerce')
+            df_proc[col_lon] = pd.to_numeric(df_proc[col_lon], errors='coerce')
+            # -------------------------------------------
+
             df_proc = df_proc.dropna(subset=[col_lat, col_lon, col_fecha, col_colonia, col_tipo])
             
             df_proc[col_colonia] = df_proc[col_colonia].apply(limpiar_texto)
             df_proc[col_tipo] = df_proc[col_tipo].apply(limpiar_texto)
 
             st.subheader("3. Filtra los datos")
-            
-            # Filtro por fecha
-            fecha_min = df_proc[col_fecha].min().date()
-            fecha_max = df_proc[col_fecha].max().date()
-            fecha_inicio, fecha_fin = st.date_input(
-                "Rango de fechas:", value=(fecha_min, fecha_max),
-                min_value=fecha_min, max_value=fecha_max
-            )
             
             # Filtro por tipo de incidente
             tipos_disponibles = sorted(df_proc[col_tipo].unique())
