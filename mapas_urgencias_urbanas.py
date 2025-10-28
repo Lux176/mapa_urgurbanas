@@ -52,13 +52,14 @@ def obtener_centroide(feature):
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
 
-# --- FUNCIÓN MEJORADA DE COLORES ÚNICOS ---
-def generar_color_por_texto(texto):
-    """Genera un color único, brillante y bien diferenciado a partir del texto."""
+# --- FUNCIÓN CORREGIDA DE COLORES ÚNICOS ---
+def generar_color_por_texto(texto, index, total):
+    """Genera un color único y bien diferenciado a partir del texto y índice."""
+    # Usar hash para consistencia pero añadir índice para evitar repeticiones
     hash_value = int(hashlib.sha256(texto.encode()).hexdigest(), 16)
-    hue = hash_value % 360
-    saturation = 75
-    lightness = 50
+    hue = (hash_value + index * (360 / max(total, 1))) % 360
+    saturation = 75 + (index % 3) * 5  # Variación leve en saturación
+    lightness = 45 + (index % 4) * 3   # Variación leve en luminosidad
     r, g, b = colorsys.hls_to_rgb(hue / 360, lightness / 100, saturation / 100)
     return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
 
@@ -87,7 +88,9 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
 
     tipos_unicos = df[col_tipo].unique()
-    color_map = {tipo: generar_color_por_texto(tipo) for tipo in tipos_unicos}
+    # CORRECCIÓN: Pasar índice y total para colores únicos
+    color_map = {tipo: generar_color_por_texto(tipo, idx, len(tipos_unicos)) 
+                for idx, tipo in enumerate(tipos_unicos)}
 
     nombres_originales = {}
     for feature in gj_data['features']:
@@ -97,11 +100,16 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             feature['properties'][campo_geojson] = limpio
             nombres_originales[limpio] = original
 
-    # Polígonos de colonias
+    # Polígonos de colonias - MEJORAR TOOLTIP
     folium.GeoJson(
         gj_data, name='Colonias',
         style_function=lambda x: {'fillColor': '#ffffff', 'color': '#808080', 'weight': 1, 'fillOpacity': 0.1},
-        tooltip=folium.GeoJsonTooltip(fields=[campo_geojson], aliases=['Colonia:'])
+        tooltip=folium.GeoJsonTooltip(
+            fields=[campo_geojson], 
+            aliases=['Colonia:'],
+            localize=True,
+            sticky=False
+        )
     ).add_to(mapa)
 
     # Nombres de colonias
@@ -116,10 +124,29 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                 icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF; white-space: nowrap;">{nombre_display}</div>')
             ).add_to(capa_nombres)
 
-    # Capa de incidentes
+    # Capa de incidentes - CORREGIR TOOLTIPS
     capa_incidentes = folium.FeatureGroup(name="Incidentes", show=True).add_to(mapa)
     for _, row in df.iterrows():
-        popup_html = f"<b>Tipo:</b> {row[col_tipo].title()}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Fecha:</b> {row['Fecha Original']}"
+        # Tooltip mejorado con toda la información
+        tooltip_text = f"""
+        <div style="font-family: Arial; font-size: 12px;">
+            <b>Colonia:</b> {row[col_colonia].title()}<br>
+            <b>Tipo:</b> {row[col_tipo].title()}<br>
+            <b>Fecha:</b> {row['Fecha Original']}
+        </div>
+        """
+        
+        popup_html = f"""
+        <div style="font-family: Arial; font-size: 14px;">
+            <h4 style="margin: 0 0 10px 0; color: #333;">Detalles del Incidente</h4>
+            <hr style="margin: 5px 0;">
+            <b>Colonia:</b> {row[col_colonia].title()}<br>
+            <b>Tipo de Incidente:</b> {row[col_tipo].title()}<br>
+            <b>Fecha:</b> {row['Fecha Original']}<br>
+            <b>Coordenadas:</b> {row[col_lat]:.6f}, {row[col_lon]:.6f}
+        </div>
+        """
+        
         folium.CircleMarker(
             location=[row[col_lat], row[col_lon]],
             radius=6,
@@ -128,7 +155,7 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             fill_color=color_map.get(row[col_tipo]),
             fill_opacity=0.8,
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=row[col_tipo].title()
+            tooltip=folium.Tooltip(tooltip_text, sticky=True)  # CORRECCIÓN: Tooltip sticky
         ).add_to(capa_incidentes)
 
     # Mapa de calor
