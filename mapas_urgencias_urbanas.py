@@ -51,11 +51,13 @@ def obtener_centroide(feature):
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
+# --- FUNCIÓN PARA AGREGAR LA LEYENDA (CSS MODIFICADO PARA SER COMPACTA) ---
 def agregar_leyenda_html(mapa, color_map):
-    """Añade una leyenda HTML horizontal al mapa."""
+    """Añade una leyenda HTML compacta y adaptable al mapa."""
     items_html = ""
     for tipo, color in color_map.items():
-        items_html += f'<li style="margin-right: 15px;"><span style="background-color:{color};"></span>{tipo}</li>'
+        # Añadimos padding para espaciar los elementos
+        items_html += f'<li style="padding: 2px 8px;"><span style="background-color:{color};"></span>{tipo}</li>'
 
     leyenda_html = f"""
      <div id="maplegend" class="maplegend">
@@ -65,24 +67,47 @@ def agregar_leyenda_html(mapa, color_map):
     css_html = """
     <style type='text/css'>
       .maplegend { 
-          position: fixed; z-index:9999; bottom: 20px; left: 50%; transform: translateX(-50%);
-          background-color: rgba(255, 255, 255, 0.85); border-radius: 8px; border: 2px solid #bbb;
-          padding: 10px 15px; font-family: Arial, sans-serif; box-shadow: 0 0 15px rgba(0,0,0,0.2); 
+          position: fixed; 
+          z-index:9999; 
+          bottom: 20px; 
+          left: 50%; 
+          transform: translateX(-50%);
+          background-color: rgba(255, 255, 255, 0.9); 
+          border-radius: 8px; 
+          border: 2px solid #bbb;
+          padding: 8px; 
+          font-family: Arial, sans-serif; 
+          box-shadow: 0 0 15px rgba(0,0,0,0.2); 
+          max-width: 80vw; /* La leyenda no ocupará más del 80% del ancho de la pantalla */
       }
       .maplegend .legend-labels { 
-          list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; align-items: center; 
+          list-style: none; 
+          margin: 0; 
+          padding: 0; 
+          display: flex; 
+          flex-direction: row; 
+          flex-wrap: wrap; /* La clave para que se adapte y cree nuevas filas */
+          justify-content: center; /* Centra los elementos */
       }
       .maplegend .legend-labels li { 
-          display: flex; align-items: center; font-size: 14px; 
+          display: flex; 
+          align-items: center; 
+          font-size: 14px; 
+          white-space: nowrap; /* Evita que el texto de un item se parta */
       }
       .maplegend .legend-labels span { 
-          display: inline-block; width: 16px; height: 16px; margin-right: 8px;
-          border-radius: 50%; border: 1px solid #777; 
+          display: inline-block; 
+          width: 16px; 
+          height: 16px; 
+          margin-right: 8px;
+          border-radius: 50%; 
+          border: 1px solid #777; 
       }
     </style>
     """
     mapa.get_root().header.add_child(folium.Element(css_html))
     mapa.get_root().html.add_child(folium.Element(leyenda_html))
+
 
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
     """Crea y configura el mapa Folium con todas sus capas."""
