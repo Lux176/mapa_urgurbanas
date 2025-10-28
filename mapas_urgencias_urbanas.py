@@ -51,63 +51,38 @@ def obtener_centroide(feature):
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
-# --- FUNCIÓN PARA AGREGAR LA LEYENDA (CSS MODIFICADO PARA LAYOUT HORIZONTAL) ---
 def agregar_leyenda_html(mapa, color_map):
+    """Añade una leyenda HTML horizontal al mapa."""
     items_html = ""
     for tipo, color in color_map.items():
-        # Cada elemento de la leyenda ahora tiene un margen a la derecha para espaciado horizontal
         items_html += f'<li style="margin-right: 15px;"><span style="background-color:{color};"></span>{tipo}</li>'
 
     leyenda_html = f"""
      <div id="maplegend" class="maplegend">
-       <div class="legend-title">Tipo de Incidente</div>
        <ul class="legend-labels">{items_html}</ul>
      </div>
     """
     css_html = """
     <style type='text/css'>
       .maplegend { 
-          position: fixed; 
-          z-index:9999; 
-          bottom: 20px; /* Un poco más arriba del borde */
-          left: 50%; 
-          transform: translateX(-50%);
-          background-color: rgba(255, 255, 255, 0.85); 
-          border-radius: 8px; 
-          border: 2px solid #bbb;
-          padding: 10px 15px; /* Más ancho que alto */
-          font-family: Arial, sans-serif; 
-          box-shadow: 0 0 15px rgba(0,0,0,0.2); 
-      }
-      .maplegend .legend-title { 
-          display: none; /* Ocultamos el título para un look más limpio y horizontal */
+          position: fixed; z-index:9999; bottom: 20px; left: 50%; transform: translateX(-50%);
+          background-color: rgba(255, 255, 255, 0.85); border-radius: 8px; border: 2px solid #bbb;
+          padding: 10px 15px; font-family: Arial, sans-serif; box-shadow: 0 0 15px rgba(0,0,0,0.2); 
       }
       .maplegend .legend-labels { 
-          list-style: none; 
-          margin: 0; 
-          padding: 0; 
-          display: flex; /* La clave para el layout horizontal */
-          flex-direction: row; /* Asegura que los items se pongan en fila */
-          align-items: center; 
+          list-style: none; margin: 0; padding: 0; display: flex; flex-direction: row; align-items: center; 
       }
       .maplegend .legend-labels li { 
-          display: flex; 
-          align-items: center; 
-          font-size: 14px; 
+          display: flex; align-items: center; font-size: 14px; 
       }
       .maplegend .legend-labels span { 
-          display: inline-block; 
-          width: 16px; 
-          height: 16px; 
-          margin-right: 8px; /* Espacio entre el color y el texto */
-          border-radius: 50%; 
-          border: 1px solid #777; 
+          display: inline-block; width: 16px; height: 16px; margin-right: 8px;
+          border-radius: 50%; border: 1px solid #777; 
       }
     </style>
     """
     mapa.get_root().header.add_child(folium.Element(css_html))
     mapa.get_root().html.add_child(folium.Element(leyenda_html))
-
 
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
     """Crea y configura el mapa Folium con todas sus capas."""
@@ -166,13 +141,11 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     return mapa
 
 # --- INTERFAZ DE STREAMLIT ---
-
 st.title("🗺️ Visualizador de Mapas de Riesgos")
 st.markdown("Sube tus archivos de incidentes y el mapa de colonias para generar una visualización interactiva.")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
-
     st.subheader("1. Carga tus archivos")
     uploaded_data_file = st.file_uploader("Archivo de incidentes (Excel o CSV)", type=['xlsx', 'csv'])
     uploaded_geojson_file = st.file_uploader("Archivo de colonias (GeoJSON)", type=['geojson', 'json'])
@@ -276,4 +249,4 @@ if 'df_final' in locals() and not df_final.empty:
 elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
     st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados. Por favor, revisa tus selecciones en la barra lateral.")
 else:
-    st.info("👋 Sube tus archivos en la barra lateral para
+    st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
