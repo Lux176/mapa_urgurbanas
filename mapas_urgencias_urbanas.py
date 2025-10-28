@@ -7,7 +7,8 @@ import folium
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import unicodedata
-import hashlib # Para generar colores únicos
+import hashlib
+from io import BytesIO
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -16,26 +17,16 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- FUNCIONES DE PROCESAMIENTO ---
-
+# --- FUNCIONES AUXILIARES ---
 def limpiar_texto(texto):
-    """Normaliza un texto a minúsculas, sin acentos y unifica reportes."""
     if not isinstance(texto, str):
         return texto
-    
-    texto_limpio = unicodedata.normalize('NFD', texto) \
-        .encode('ascii', 'ignore') \
-        .decode('utf-8') \
-        .lower() \
-        .strip()
-
+    texto_limpio = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8').lower().strip()
     if texto_limpio.startswith('deslizamiento de tierra/talud'):
         return 'deslizamiento de tierra/talud'
-    
     return texto_limpio
 
 def obtener_centroide(feature):
-    """Calcula el centroide del polígono más grande en una feature GeoJSON."""
     geom = feature.get("geometry", {})
     gtype, coords = geom.get("type"), geom.get("coordinates", [])
     if gtype == "Polygon":
@@ -44,97 +35,33 @@ def obtener_centroide(feature):
         polygon_coords = max([poly[0] for poly in coords], key=len, default=[])
     else:
         return None
-    
     if not polygon_coords:
         return None
-    
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
-# --- NUEVA FUNCIÓN PARA GENERAR COLORES ÚNICOS ---
 def generar_color_por_texto(texto):
-    """Genera un color hexadecimal único y consistente a partir de un texto."""
     hash_object = hashlib.sha256(texto.encode())
-    hex_dig = hash_object.hexdigest()
-    # Usamos los primeros 6 caracteres del hash para el color
-    return f"#{hex_dig[:6]}"
+    return f"#{hash_object.hexdigest()[:6]}"
 
-def agregar_controles_descarga(mapa):
-    """Añade botones de descarga (HTML/PNG) al mapa usando HTML/JS."""
-    
-    # URL de la librería html2canvas
-    html2canvas_url = '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>'
-    mapa.get_root().header.add_child(folium.Element(html2canvas_url))
-    
-    # CSS para los botones
-    css = """
-    <style>
-        .download-buttons {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-        }
-        .download-buttons button {
-            background-color: #FFF;
-            border: 2px solid #CCC;
-            border-radius: 5px;
-            padding: 5px 10px;
-            margin-bottom: 5px;
-            cursor: pointer;
-            font-family: Arial, sans-serif;
-            font-weight: bold;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }
-        .download-buttons button:hover {
-            background-color: #F0F0F0;
-        }
-    </style>
+def agregar_leyenda(mapa, color_map):
+    """Añade una leyenda de colores personalizada al mapa."""
+    legend_html = """
+    <div style="position: fixed; 
+                bottom: 30px; left: 30px; width: 200px; 
+                background-color: white; border: 2px solid grey; 
+                z-index:9999; font-size:12px; border-radius:8px; padding: 10px;">
+        <b>🧭 Tipos de Incidente</b><br>
     """
-    
-    # HTML de los botones y el script de descarga de imagen
-    js_html = f"""
-    <div class="download-buttons">
-        <button onclick="downloadMapImage()">📸 Descargar PNG</button>
-    </div>
-    <script>
-        function downloadMapImage() {{
-            // Selecciona el contenedor del mapa
-            const mapContainer = document.querySelector('.folium-map');
-            if (mapContainer) {{
-                html2canvas(mapContainer, {{
-                    useCORS: true,
-                    onclone: (document) => {{
-                        // Al clonar el DOM para el canvas, los botones no deben aparecer en la imagen
-                        const buttons = document.querySelector('.download-buttons');
-                        if (buttons) {{
-                            buttons.style.display = 'none';
-                        }}
-                    }}
-                }}).then(canvas => {{
-                    // Crea un enlace temporal para la descarga
-                    const link = document.createElement('a');
-                    link.download = 'mapa_de_riesgos.png';
-                    link.href = canvas.toDataURL('image/png');
-                    link.click();
-                }});
-            }}
-        }}
-    </script>
-    """
-    
-    mapa.get_root().header.add_child(folium.Element(css))
-    mapa.get_root().html.add_child(folium.Element(js_html))
-
+    for tipo, color in color_map.items():
+        legend_html += f'<i style="background:{color};width:15px;height:15px;display:inline-block;margin-right:5px;border-radius:3px;"></i>{tipo.title()}<br>'
+    legend_html += "</div>"
+    mapa.get_root().html.add_child(folium.Element(legend_html))
 
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
-    """Crea y configura el mapa Folium con todas sus capas."""
     centro = [df[col_lat].mean(), df[col_lon].mean()]
     mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
 
-    # --- LÓGICA DE COLORES CORREGIDA ---
     tipos_unicos = df[col_tipo].unique()
     color_map = {tipo: generar_color_por_texto(tipo) for tipo in tipos_unicos}
 
@@ -147,11 +74,12 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             nombres_originales[limpio] = original
 
     folium.GeoJson(
-        gj_data, name='Colonias',
+        gj_data,
+        name='Colonias',
         style_function=lambda x: {'fillColor': '#ffffff', 'color': '#808080', 'weight': 1, 'fillOpacity': 0.1},
         tooltip=folium.GeoJsonTooltip(fields=[campo_geojson], aliases=['Colonia:'])
     ).add_to(mapa)
-    
+
     capa_nombres = folium.FeatureGroup(name="Nombres de Colonias", show=True).add_to(mapa)
     for feature in gj_data['features']:
         centroide = obtener_centroide(feature)
@@ -160,7 +88,7 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             nombre_display = nombres_originales.get(nombre_limpio, nombre_limpio).title()
             folium.Marker(
                 location=centroide,
-                icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF; white-space: nowrap;">{nombre_display}</div>')
+                icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF;">{nombre_display}</div>')
             ).add_to(capa_nombres)
 
     capa_incidentes = folium.FeatureGroup(name="Incidentes", show=True).add_to(mapa)
@@ -177,12 +105,9 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             tooltip=row[col_tipo]
         ).add_to(capa_incidentes)
 
-    capa_calor = folium.FeatureGroup(name="Mapa de Calor", show=True).add_to(mapa)
-    HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(capa_calor)
-
+    HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(mapa)
     folium.LayerControl(collapsed=False).add_to(mapa)
-    agregar_controles_descarga(mapa) # Añade el botón de descarga de imagen
-
+    agregar_leyenda(mapa, color_map)
     return mapa
 
 # --- INTERFAZ DE STREAMLIT ---
@@ -190,12 +115,9 @@ st.title("🗺️ Visualizador de Mapas de Riesgos")
 st.markdown("Sube tus archivos de incidentes y el mapa de colonias para generar una visualización interactiva.")
 
 with st.sidebar:
-    # (El resto del código de la interfaz de Streamlit permanece igual)
     st.header("⚙️ Configuración")
-    st.subheader("1. Carga tus archivos")
     uploaded_data_file = st.file_uploader("Archivo de incidentes (Excel o CSV)", type=['xlsx', 'csv'])
     uploaded_geojson_file = st.file_uploader("Archivo de colonias (GeoJSON)", type=['geojson', 'json'])
-
     df = None
     gj_data = None
 
@@ -203,101 +125,49 @@ with st.sidebar:
         try:
             df = pd.read_excel(uploaded_data_file) if uploaded_data_file.name.endswith('.xlsx') else pd.read_csv(uploaded_data_file)
             gj_data = json.load(uploaded_geojson_file)
-            st.success("✅ Archivos cargados.")
+            st.success("✅ Archivos cargados correctamente.")
         except Exception as e:
             st.error(f"Error al leer archivos: {e}")
             st.stop()
 
-        st.subheader("2. Asigna las columnas")
-        columnas_disponibles = df.columns.tolist()
-        col_lat = st.selectbox("Columna de LATITUD:", columnas_disponibles, index=None)
-        col_lon = st.selectbox("Columna de LONGITUD:", columnas_disponibles, index=None)
-        col_colonia = st.selectbox("Columna de COLONIA:", columnas_disponibles, index=None)
-        col_fecha = st.selectbox("Columna de FECHA:", columnas_disponibles, index=None)
-        col_tipo = st.selectbox("Columna de TIPO DE INCIDENTE:", columnas_disponibles, index=None)
+        columnas = df.columns.tolist()
+        col_lat = st.selectbox("Columna de LATITUD:", columnas)
+        col_lon = st.selectbox("Columna de LONGITUD:", columnas)
+        col_colonia = st.selectbox("Columna de COLONIA:", columnas)
+        col_fecha = st.selectbox("Columna de FECHA:", columnas)
+        col_tipo = st.selectbox("Columna de TIPO DE INCIDENTE:", columnas)
+        campos_geojson = list(gj_data['features'][0]['properties'].keys())
+        campo_geojson_sel = st.selectbox("Campo de nombre de colonia en GeoJSON:", campos_geojson)
 
-        try:
-            campos_geojson = list(gj_data['features'][0]['properties'].keys())
-            campo_geojson_sel = st.selectbox("Campo de nombre de colonia en GeoJSON:", campos_geojson, index=None)
-        except (IndexError, KeyError):
-            st.error("Archivo GeoJSON no válido.")
-            st.stop()
-            
-        columnas_esenciales = [col_lat, col_lon, col_colonia, col_fecha, col_tipo, campo_geojson_sel]
-        
-        if all(columnas_esenciales):
-            df_proc = df.copy()
-            df_proc['Fecha Original'] = df_proc[col_fecha].astype(str)
-            df_proc[col_fecha] = pd.to_datetime(df_proc[col_fecha], errors='coerce')
-            
-            df_proc[col_lat] = pd.to_numeric(df_proc[col_lat], errors='coerce')
-            df_proc[col_lon] = pd.to_numeric(df_proc[col_lon], errors='coerce')
+        df[col_colonia] = df[col_colonia].apply(limpiar_texto)
+        df[col_tipo] = df[col_tipo].apply(limpiar_texto)
+        df['Fecha Original'] = df[col_fecha].astype(str)
+        df[col_fecha] = pd.to_datetime(df[col_fecha], errors='coerce')
+        df = df.dropna(subset=[col_lat, col_lon, col_fecha])
 
-            df_proc = df_proc.dropna(subset=[col_lat, col_lon, col_fecha, col_colonia, col_tipo])
-            
-            df_proc[col_colonia] = df_proc[col_colonia].apply(limpiar_texto)
-            df_proc[col_tipo] = df_proc[col_tipo].apply(limpiar_texto)
+        st.subheader("📅 Filtros")
+        fecha_min, fecha_max = df[col_fecha].min().date(), df[col_fecha].max().date()
+        fecha_inicio, fecha_fin = st.date_input("Rango de fechas", (fecha_min, fecha_max))
+        tipos_disp = sorted(df[col_tipo].unique())
+        tipos_sel = st.multiselect("Tipos de incidente", tipos_disp, default=tipos_disp)
 
-            st.subheader("3. Filtra los datos")
-            
-            if not df_proc.empty and col_fecha in df_proc.columns:
-                fecha_min_data = df_proc[col_fecha].min().date()
-                fecha_max_data = df_proc[col_fecha].max().date()
-                fecha_inicio, fecha_fin = st.date_input(
-                    "Rango de fechas:", value=(fecha_min_data, fecha_max_data),
-                    min_value=fecha_min_data, max_value=fecha_max_data
-                )
-            else:
-                st.warning("No hay datos de fecha válidos para filtrar.")
-                fecha_inicio, fecha_fin = None, None
-                df_final = pd.DataFrame() 
-            
-            tipos_disponibles = sorted(df_proc[col_tipo].unique())
-            tipos_seleccionados = st.multiselect(
-                "Tipos de incidente a mostrar:",
-                options=tipos_disponibles,
-                default=tipos_disponibles
-            )
-            
-            if fecha_inicio and fecha_fin:
-                df_final = df_proc[
-                    (df_proc[col_fecha].dt.date >= fecha_inicio) &
-                    (df_proc[col_fecha].dt.date <= fecha_fin) &
-                    (df_proc[col_tipo].isin(tipos_seleccionados))
-                ]
-            else:
-                df_final = pd.DataFrame() 
+        df_final = df[(df[col_fecha].dt.date >= fecha_inicio) & (df[col_fecha].dt.date <= fecha_fin) & (df[col_tipo].isin(tipos_sel))]
 
-# --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
-if 'df_final' in locals() and not df_final.empty:
-    st.success(f"Mostrando {len(df_final)} incidentes en el mapa.")
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Total de Incidentes", f"{len(df_final)}")
-    col2.metric("Tipos de Incidentes Seleccionados", f"{len(tipos_seleccionados)}")
-    
-    mapa_final = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
-    
-    st_folium(mapa_final, width=1200, height=600, returned_objects=[])
+        if not df_final.empty:
+            mapa = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
 
-    st.markdown("---")
-    st.subheader("Descargar Mapa")
-    
-    # Para la descarga HTML, guardamos el mapa en un buffer de memoria
-    from io import BytesIO
-    map_buffer = BytesIO()
-    mapa_final.save(map_buffer, close_file=False)
-    map_buffer.seek(0) # Rebobinar el buffer al principio
+            # Guardar el mapa como HTML para descarga
+            map_buffer = BytesIO()
+            mapa.save(map_buffer, close_file=False)
+            map_buffer.seek(0)
 
-    st.download_button(
-        label="📥 Descargar Mapa como HTML",
-        data=map_buffer,
-        file_name="mapa_de_riesgos.html",
-        mime="text/html"
-    )
-    st.info("Para descargar el mapa como imagen PNG, usa el botón 📸 que aparece sobre el mapa.")
+            st.sidebar.markdown("---")
+            st.sidebar.download_button("📥 Descargar Mapa HTML", data=map_buffer, file_name="mapa_de_riesgos.html", mime="text/html")
 
-elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
-    st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados. Por favor, revisa tus selecciones en la barra lateral.")
-else:
-    st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
+            st.sidebar.info("El mapa se descargará sin duplicarse.")
+
+            st_folium(mapa, width=1200, height=600)
+        else:
+            st.warning("⚠️ No hay datos en el rango o filtros seleccionados.")
+    else:
+        st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
