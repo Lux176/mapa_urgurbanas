@@ -7,7 +7,7 @@ import folium
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import unicodedata
-from io import BytesIO
+import hashlib # Para generar colores únicos
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -51,62 +51,82 @@ def obtener_centroide(feature):
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
-# --- FUNCIÓN PARA AGREGAR LA LEYENDA (CSS MODIFICADO PARA SER COMPACTA) ---
-def agregar_leyenda_html(mapa, color_map):
-    """Añade una leyenda HTML compacta y adaptable al mapa."""
-    items_html = ""
-    for tipo, color in color_map.items():
-        # Añadimos padding para espaciar los elementos
-        items_html += f'<li style="padding: 2px 8px;"><span style="background-color:{color};"></span>{tipo}</li>'
+# --- NUEVA FUNCIÓN PARA GENERAR COLORES ÚNICOS ---
+def generar_color_por_texto(texto):
+    """Genera un color hexadecimal único y consistente a partir de un texto."""
+    hash_object = hashlib.sha256(texto.encode())
+    hex_dig = hash_object.hexdigest()
+    # Usamos los primeros 6 caracteres del hash para el color
+    return f"#{hex_dig[:6]}"
 
-    leyenda_html = f"""
-     <div id="maplegend" class="maplegend">
-       <ul class="legend-labels">{items_html}</ul>
-     </div>
-    """
-    css_html = """
-    <style type='text/css'>
-      .maplegend { 
-          position: fixed; 
-          z-index:9999; 
-          bottom: 20px; 
-          left: 50%; 
-          transform: translateX(-50%);
-          background-color: rgba(255, 255, 255, 0.9); 
-          border-radius: 8px; 
-          border: 2px solid #bbb;
-          padding: 8px; 
-          font-family: Arial, sans-serif; 
-          box-shadow: 0 0 15px rgba(0,0,0,0.2); 
-          max-width: 80vw; /* La leyenda no ocupará más del 80% del ancho de la pantalla */
-      }
-      .maplegend .legend-labels { 
-          list-style: none; 
-          margin: 0; 
-          padding: 0; 
-          display: flex; 
-          flex-direction: row; 
-          flex-wrap: wrap; /* La clave para que se adapte y cree nuevas filas */
-          justify-content: center; /* Centra los elementos */
-      }
-      .maplegend .legend-labels li { 
-          display: flex; 
-          align-items: center; 
-          font-size: 14px; 
-          white-space: nowrap; /* Evita que el texto de un item se parta */
-      }
-      .maplegend .legend-labels span { 
-          display: inline-block; 
-          width: 16px; 
-          height: 16px; 
-          margin-right: 8px;
-          border-radius: 50%; 
-          border: 1px solid #777; 
-      }
+def agregar_controles_descarga(mapa):
+    """Añade botones de descarga (HTML/PNG) al mapa usando HTML/JS."""
+    
+    # URL de la librería html2canvas
+    html2canvas_url = '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>'
+    mapa.get_root().header.add_child(folium.Element(html2canvas_url))
+    
+    # CSS para los botones
+    css = """
+    <style>
+        .download-buttons {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+        }
+        .download-buttons button {
+            background-color: #FFF;
+            border: 2px solid #CCC;
+            border-radius: 5px;
+            padding: 5px 10px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            font-family: Arial, sans-serif;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .download-buttons button:hover {
+            background-color: #F0F0F0;
+        }
     </style>
     """
-    mapa.get_root().header.add_child(folium.Element(css_html))
-    mapa.get_root().html.add_child(folium.Element(leyenda_html))
+    
+    # HTML de los botones y el script de descarga de imagen
+    js_html = f"""
+    <div class="download-buttons">
+        <button onclick="downloadMapImage()">📸 Descargar PNG</button>
+    </div>
+    <script>
+        function downloadMapImage() {{
+            // Selecciona el contenedor del mapa
+            const mapContainer = document.querySelector('.folium-map');
+            if (mapContainer) {{
+                html2canvas(mapContainer, {{
+                    useCORS: true,
+                    onclone: (document) => {{
+                        // Al clonar el DOM para el canvas, los botones no deben aparecer en la imagen
+                        const buttons = document.querySelector('.download-buttons');
+                        if (buttons) {{
+                            buttons.style.display = 'none';
+                        }}
+                    }}
+                }}).then(canvas => {{
+                    // Crea un enlace temporal para la descarga
+                    const link = document.createElement('a');
+                    link.download = 'mapa_de_riesgos.png';
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                }});
+            }}
+        }}
+    </script>
+    """
+    
+    mapa.get_root().header.add_child(folium.Element(css))
+    mapa.get_root().html.add_child(folium.Element(js_html))
 
 
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
@@ -114,9 +134,9 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     centro = [df[col_lat].mean(), df[col_lon].mean()]
     mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
 
+    # --- LÓGICA DE COLORES CORREGIDA ---
     tipos_unicos = df[col_tipo].unique()
-    colores = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33', '#a65628', '#f781bf']
-    color_map = {tipo: colores[i % len(colores)] for i, tipo in enumerate(tipos_unicos)}
+    color_map = {tipo: generar_color_por_texto(tipo) for tipo in tipos_unicos}
 
     nombres_originales = {}
     for feature in gj_data['features']:
@@ -161,7 +181,7 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(capa_calor)
 
     folium.LayerControl(collapsed=False).add_to(mapa)
-    agregar_leyenda_html(mapa, color_map)
+    agregar_controles_descarga(mapa) # Añade el botón de descarga de imagen
 
     return mapa
 
@@ -170,6 +190,7 @@ st.title("🗺️ Visualizador de Mapas de Riesgos")
 st.markdown("Sube tus archivos de incidentes y el mapa de colonias para generar una visualización interactiva.")
 
 with st.sidebar:
+    # (El resto del código de la interfaz de Streamlit permanece igual)
     st.header("⚙️ Configuración")
     st.subheader("1. Carga tus archivos")
     uploaded_data_file = st.file_uploader("Archivo de incidentes (Excel o CSV)", type=['xlsx', 'csv'])
@@ -262,14 +283,19 @@ if 'df_final' in locals() and not df_final.empty:
     st.markdown("---")
     st.subheader("Descargar Mapa")
     
-    mapa_html_bytes = mapa_final._repr_html_().encode("utf-8")
-    
+    # Para la descarga HTML, guardamos el mapa en un buffer de memoria
+    from io import BytesIO
+    map_buffer = BytesIO()
+    mapa_final.save(map_buffer, close_file=False)
+    map_buffer.seek(0) # Rebobinar el buffer al principio
+
     st.download_button(
         label="📥 Descargar Mapa como HTML",
-        data=mapa_html_bytes,
+        data=map_buffer,
         file_name="mapa_de_riesgos.html",
         mime="text/html"
     )
+    st.info("Para descargar el mapa como imagen PNG, usa el botón 📸 que aparece sobre el mapa.")
 
 elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
     st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados. Por favor, revisa tus selecciones en la barra lateral.")
