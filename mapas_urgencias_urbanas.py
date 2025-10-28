@@ -8,6 +8,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import unicodedata
 import hashlib
+import colorsys
 from io import BytesIO
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -18,16 +19,25 @@ st.set_page_config(
 )
 
 # --- FUNCIONES DE PROCESAMIENTO ---
-
 def limpiar_texto(texto):
+    """Normaliza un texto a minúsculas, sin acentos y unifica reportes."""
     if not isinstance(texto, str):
         return texto
-    texto_limpio = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8').lower().strip()
+    
+    texto_limpio = unicodedata.normalize('NFD', texto) \
+        .encode('ascii', 'ignore') \
+        .decode('utf-8') \
+        .lower() \
+        .strip()
+
     if texto_limpio.startswith('deslizamiento de tierra/talud'):
         return 'deslizamiento de tierra/talud'
+    
     return texto_limpio
 
+
 def obtener_centroide(feature):
+    """Calcula el centroide del polígono más grande en una feature GeoJSON."""
     geom = feature.get("geometry", {})
     gtype, coords = geom.get("type"), geom.get("coordinates", [])
     if gtype == "Polygon":
@@ -41,38 +51,39 @@ def obtener_centroide(feature):
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
+
+# --- FUNCIÓN MEJORADA DE COLORES ÚNICOS ---
 def generar_color_por_texto(texto):
-    hash_object = hashlib.sha256(texto.encode())
-    hex_dig = hash_object.hexdigest()
-    return f"#{hex_dig[:6]}"
+    """Genera un color único, brillante y bien diferenciado a partir del texto."""
+    hash_value = int(hashlib.sha256(texto.encode()).hexdigest(), 16)
+    hue = hash_value % 360
+    saturation = 75
+    lightness = 50
+    r, g, b = colorsys.hls_to_rgb(hue / 360, lightness / 100, saturation / 100)
+    return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
+
 
 def agregar_leyenda(mapa, color_map):
-    """Agrega una leyenda visible al mapa."""
+    """Agrega una leyenda al mapa basada en los tipos de incidente."""
     legend_html = """
     <div style="
         position: fixed;
-        bottom: 40px;
-        left: 40px;
-        background-color: white;
-        padding: 10px 15px;
-        border-radius: 10px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
-        font-size: 13px;
-        z-index: 9999;">
-        <b>Leyenda de Tipos de Incidente</b><br>
+        bottom: 30px; left: 30px; width: 200px;
+        z-index:9999; font-size:14px;
+        background-color:white;
+        border:2px solid grey; border-radius:8px;
+        padding:10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+        <b>🟢 Leyenda</b><br>
     """
     for tipo, color in color_map.items():
-        legend_html += f'<i style="background:{color};width:12px;height:12px;display:inline-block;margin-right:6px;"></i> {tipo}<br>'
+        legend_html += f'<div style="margin:3px 0;"><span style="background-color:{color};width:15px;height:15px;display:inline-block;margin-right:5px;border:1px solid #000;"></span>{tipo.title()}</div>'
     legend_html += "</div>"
     mapa.get_root().html.add_child(folium.Element(legend_html))
 
+
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
-    df_valid = df.dropna(subset=[col_lat, col_lon])
-    if df_valid.empty:
-        centro = [19.35, -99.16]
-    else:
-        centro = [df_valid[col_lat].mean(), df_valid[col_lon].mean()]
-        
+    """Crea y configura el mapa Folium con todas sus capas."""
+    centro = [df[col_lat].mean(), df[col_lon].mean()]
     mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
 
     tipos_unicos = df[col_tipo].unique()
@@ -86,13 +97,14 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             feature['properties'][campo_geojson] = limpio
             nombres_originales[limpio] = original
 
+    # Polígonos de colonias
     folium.GeoJson(
-        gj_data,
-        name='Colonias',
+        gj_data, name='Colonias',
         style_function=lambda x: {'fillColor': '#ffffff', 'color': '#808080', 'weight': 1, 'fillOpacity': 0.1},
         tooltip=folium.GeoJsonTooltip(fields=[campo_geojson], aliases=['Colonia:'])
     ).add_to(mapa)
 
+    # Nombres de colonias
     capa_nombres = folium.FeatureGroup(name="Nombres de Colonias", show=True).add_to(mapa)
     for feature in gj_data['features']:
         centroide = obtener_centroide(feature)
@@ -104,9 +116,10 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                 icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF; white-space: nowrap;">{nombre_display}</div>')
             ).add_to(capa_nombres)
 
+    # Capa de incidentes
     capa_incidentes = folium.FeatureGroup(name="Incidentes", show=True).add_to(mapa)
-    for _, row in df_valid.iterrows():
-        popup_html = f"<b>Tipo:</b> {row[col_tipo]}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Fecha:</b> {row['Fecha Original']}"
+    for _, row in df.iterrows():
+        popup_html = f"<b>Tipo:</b> {row[col_tipo].title()}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Fecha:</b> {row['Fecha Original']}"
         folium.CircleMarker(
             location=[row[col_lat], row[col_lon]],
             radius=6,
@@ -115,14 +128,18 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             fill_color=color_map.get(row[col_tipo]),
             fill_opacity=0.8,
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=row[col_tipo]
+            tooltip=row[col_tipo].title()
         ).add_to(capa_incidentes)
 
-    HeatMap(df_valid[[col_lat, col_lon]].values, radius=15).add_to(mapa)
+    # Mapa de calor
+    capa_calor = folium.FeatureGroup(name="Mapa de Calor", show=True).add_to(mapa)
+    HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(capa_calor)
+
+    # Controles y leyenda
     folium.LayerControl(collapsed=False).add_to(mapa)
     agregar_leyenda(mapa, color_map)
-
     return mapa
+
 
 # --- INTERFAZ DE STREAMLIT ---
 st.title("🗺️ Visualizador de Mapas de Riesgos")
@@ -141,7 +158,7 @@ with st.sidebar:
         try:
             df = pd.read_excel(uploaded_data_file) if uploaded_data_file.name.endswith('.xlsx') else pd.read_csv(uploaded_data_file)
             gj_data = json.load(uploaded_geojson_file)
-            st.success("✅ Archivos cargados.")
+            st.success("✅ Archivos cargados correctamente.")
         except Exception as e:
             st.error(f"Error al leer archivos: {e}")
             st.stop()
@@ -182,7 +199,6 @@ with st.sidebar:
                     min_value=fecha_min_data, max_value=fecha_max_data
                 )
             else:
-                st.warning("No hay datos de fecha válidos para filtrar.")
                 fecha_inicio, fecha_fin = None, None
                 df_final = pd.DataFrame() 
             
@@ -202,32 +218,28 @@ with st.sidebar:
             else:
                 df_final = pd.DataFrame() 
 
+            # --- Botones de descarga en la barra lateral ---
+            if 'df_final' in locals() and not df_final.empty:
+                st.markdown("---")
+                st.subheader("💾 Descargas")
+                mapa_previo = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
+                map_buffer = BytesIO()
+                mapa_previo.save(map_buffer, close_file=False)
+                map_buffer.seek(0)
+                st.download_button(
+                    label="📥 Descargar Mapa como HTML",
+                    data=map_buffer,
+                    file_name="mapa_de_riesgos.html",
+                    mime="text/html"
+                )
+
 # --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
 if 'df_final' in locals() and not df_final.empty:
     st.success(f"Mostrando {len(df_final)} incidentes en el mapa.")
     col1, col2 = st.columns(2)
     col1.metric("Total de Incidentes", f"{len(df_final)}")
     col2.metric("Tipos de Incidentes Seleccionados", f"{len(tipos_seleccionados)}")
-    
     mapa_final = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
     st_folium(mapa_final, width=1200, height=600, returned_objects=[])
-
-    # --- BOTONES DE DESCARGA EN LA BARRA LATERAL ---
-    with st.sidebar:
-        st.markdown("---")
-        st.header("⬇️ Descargas")
-        map_buffer = BytesIO()
-        mapa_final.save(map_buffer, close_file=False)
-        map_buffer.seek(0)
-        st.download_button(
-            label="📥 Descargar Mapa (HTML)",
-            data=map_buffer,
-            file_name="mapa_de_riesgos.html",
-            mime="text/html"
-        )
-        st.info("📸 Para descargar el mapa como imagen PNG, usa la función nativa del navegador.")
-
-elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
-    st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados.")
 else:
     st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
