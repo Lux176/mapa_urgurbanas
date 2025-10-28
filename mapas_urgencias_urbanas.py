@@ -7,6 +7,7 @@ import folium
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import unicodedata
+from io import BytesIO
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -49,6 +50,69 @@ def obtener_centroide(feature):
     
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
+
+# --- FUNCIÓN PARA AGREGAR LA LEYENDA (ADAPTADA PARA STREAMLIT) ---
+def agregar_leyenda_html(mapa, color_map):
+    items_html = ""
+    for tipo, color in color_map.items():
+        items_html += f'<li><span style="background-color:{color};"></span>{tipo}</li>'
+
+    leyenda_html = f"""
+     <div id="maplegend" class="maplegend">
+       <div class="legend-title">Tipo de Incidente</div>
+       <ul class="legend-labels">{items_html}</ul>
+     </div>
+    """
+    css_html = """
+    <style type='text/css'>
+      .maplegend { 
+          position: fixed; 
+          z-index:9999; 
+          bottom: 30px; 
+          left: 50%; 
+          transform: translateX(-50%);
+          background-color: rgba(255, 255, 255, 0.85); 
+          border-radius: 8px; 
+          border: 2px solid #bbb;
+          padding: 10px; 
+          font-family: Arial, sans-serif; 
+          box-shadow: 0 0 15px rgba(0,0,0,0.2); 
+      }
+      .maplegend .legend-title { 
+          text-align: center; 
+          margin-bottom: 8px; 
+          font-weight: bold; 
+          font-size: 16px; 
+      }
+      .maplegend .legend-labels { 
+          list-style: none; 
+          margin: 0; 
+          padding: 0; 
+      }
+      .maplegend .legend-labels li { 
+          display: flex; 
+          align-items: center; 
+          margin-bottom: 5px; 
+          font-size: 14px; 
+      }
+      .maplegend .legend-labels span { 
+          display: inline-block; 
+          width: 18px; 
+          height: 18px; 
+          margin-right: 10px; 
+          border-radius: 50%; 
+          border: 1px solid #777; 
+      }
+    </style>
+    """
+    # Streamlit Folium ya se encarga de inyectar HTML y CSS, solo necesitamos el contenido
+    # No es necesario usar mapa.get_root().header.add_child ni mapa.get_root().html.add_child directamente
+    # Sin embargo, para que la leyenda sea parte del HTML final descargado,
+    # debemos insertarla de una manera que Folium la reconozca o añadirla manualmente.
+    # Una forma simple es añadir el CSS al mapa directamente y el HTML de la leyenda como un marcador oculto.
+    mapa.get_root().header.add_child(folium.Element(css_html))
+    mapa.get_root().html.add_child(folium.Element(leyenda_html))
+
 
 def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo):
     """Crea y configura el mapa Folium con todas sus capas."""
@@ -107,6 +171,8 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(capa_calor)
 
     folium.LayerControl(collapsed=False).add_to(mapa)
+    agregar_leyenda_html(mapa, color_map) # <--- LLAMADA A LA FUNCIÓN DE LEYENDA
+
     return mapa
 
 # --- INTERFAZ DE STREAMLIT ---
@@ -157,10 +223,8 @@ with st.sidebar:
             df_proc['Fecha Original'] = df_proc[col_fecha].astype(str)
             df_proc[col_fecha] = pd.to_datetime(df_proc[col_fecha], errors='coerce')
             
-            # --- CORRECCIÓN AÑADIDA AQUÍ ---
             df_proc[col_lat] = pd.to_numeric(df_proc[col_lat], errors='coerce')
             df_proc[col_lon] = pd.to_numeric(df_proc[col_lon], errors='coerce')
-            # --------------------------------
 
             df_proc = df_proc.dropna(subset=[col_lat, col_lon, col_fecha, col_colonia, col_tipo])
             
@@ -170,12 +234,17 @@ with st.sidebar:
             st.subheader("3. Filtra los datos")
             
             # Filtro por fecha
-            fecha_min = df_proc[col_fecha].min().date()
-            fecha_max = df_proc[col_fecha].max().date()
-            fecha_inicio, fecha_fin = st.date_input(
-                "Rango de fechas:", value=(fecha_min, fecha_max),
-                min_value=fecha_min, max_value=fecha_max
-            )
+            if not df_proc.empty and col_fecha in df_proc.columns:
+                fecha_min_data = df_proc[col_fecha].min().date()
+                fecha_max_data = df_proc[col_fecha].max().date()
+                fecha_inicio, fecha_fin = st.date_input(
+                    "Rango de fechas:", value=(fecha_min_data, fecha_max_data),
+                    min_value=fecha_min_data, max_value=fecha_max_data
+                )
+            else:
+                st.warning("No hay datos de fecha válidos para filtrar.")
+                fecha_inicio, fecha_fin = None, None # Asegurarse de que no se usen fechas inválidas
+                df_final = pd.DataFrame() # Vaciar df_final si no hay fechas
             
             # Filtro por tipo de incidente
             tipos_disponibles = sorted(df_proc[col_tipo].unique())
@@ -185,12 +254,15 @@ with st.sidebar:
                 default=tipos_disponibles
             )
             
-            # Aplicar filtros
-            df_final = df_proc[
-                (df_proc[col_fecha].dt.date >= fecha_inicio) &
-                (df_proc[col_fecha].dt.date <= fecha_fin) &
-                (df_proc[col_tipo].isin(tipos_seleccionados))
-            ]
+            # Aplicar filtros solo si las fechas son válidas
+            if fecha_inicio and fecha_fin:
+                df_final = df_proc[
+                    (df_proc[col_fecha].dt.date >= fecha_inicio) &
+                    (df_proc[col_fecha].dt.date <= fecha_fin) &
+                    (df_proc[col_tipo].isin(tipos_seleccionados))
+                ]
+            else:
+                df_final = pd.DataFrame() # Si las fechas no son válidas, df_final está vacío
 
 # --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
 if 'df_final' in locals() and not df_final.empty:
@@ -202,9 +274,25 @@ if 'df_final' in locals() and not df_final.empty:
     
     mapa_final = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
     
+    # Mostrar el mapa interactivo
     st_folium(mapa_final, width=1200, height=600, returned_objects=[])
 
-elif 'uploaded_data_file' in locals() and uploaded_data_file:
-    st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados.")
+    # Botón de Descarga
+    st.markdown("---")
+    st.subheader("Descargar Mapa")
+    
+    # Para descargar el HTML, obtenemos el HTML del mapa Folium
+    mapa_html = mapa_final._repr_html_()
+    
+    st.download_button(
+        label="📥 Descargar Mapa como HTML",
+        data=mapa_html.encode("utf-8"),
+        file_name="mapa_de_riesgos.html",
+        mime="text/html"
+    )
+
+elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
+    # Este mensaje se muestra si se subieron archivos pero no hay datos después de filtros/procesamiento
+    st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados. Por favor, revisa tus selecciones en la barra lateral.")
 else:
     st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
