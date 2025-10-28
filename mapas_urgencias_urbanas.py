@@ -51,11 +51,12 @@ def obtener_centroide(feature):
     longitudes, latitudes = zip(*polygon_coords)
     return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
-# --- FUNCIÓN PARA AGREGAR LA LEYENDA (ADAPTADA PARA STREAMLIT) ---
+# --- FUNCIÓN PARA AGREGAR LA LEYENDA (CSS MODIFICADO PARA LAYOUT HORIZONTAL) ---
 def agregar_leyenda_html(mapa, color_map):
     items_html = ""
     for tipo, color in color_map.items():
-        items_html += f'<li><span style="background-color:{color};"></span>{tipo}</li>'
+        # Cada elemento de la leyenda ahora tiene un margen a la derecha para espaciado horizontal
+        items_html += f'<li style="margin-right: 15px;"><span style="background-color:{color};"></span>{tipo}</li>'
 
     leyenda_html = f"""
      <div id="maplegend" class="maplegend">
@@ -68,48 +69,42 @@ def agregar_leyenda_html(mapa, color_map):
       .maplegend { 
           position: fixed; 
           z-index:9999; 
-          bottom: 30px; 
+          bottom: 20px; /* Un poco más arriba del borde */
           left: 50%; 
           transform: translateX(-50%);
           background-color: rgba(255, 255, 255, 0.85); 
           border-radius: 8px; 
           border: 2px solid #bbb;
-          padding: 10px; 
+          padding: 10px 15px; /* Más ancho que alto */
           font-family: Arial, sans-serif; 
           box-shadow: 0 0 15px rgba(0,0,0,0.2); 
       }
       .maplegend .legend-title { 
-          text-align: center; 
-          margin-bottom: 8px; 
-          font-weight: bold; 
-          font-size: 16px; 
+          display: none; /* Ocultamos el título para un look más limpio y horizontal */
       }
       .maplegend .legend-labels { 
           list-style: none; 
           margin: 0; 
           padding: 0; 
+          display: flex; /* La clave para el layout horizontal */
+          flex-direction: row; /* Asegura que los items se pongan en fila */
+          align-items: center; 
       }
       .maplegend .legend-labels li { 
           display: flex; 
           align-items: center; 
-          margin-bottom: 5px; 
           font-size: 14px; 
       }
       .maplegend .legend-labels span { 
           display: inline-block; 
-          width: 18px; 
-          height: 18px; 
-          margin-right: 10px; 
+          width: 16px; 
+          height: 16px; 
+          margin-right: 8px; /* Espacio entre el color y el texto */
           border-radius: 50%; 
           border: 1px solid #777; 
       }
     </style>
     """
-    # Streamlit Folium ya se encarga de inyectar HTML y CSS, solo necesitamos el contenido
-    # No es necesario usar mapa.get_root().header.add_child ni mapa.get_root().html.add_child directamente
-    # Sin embargo, para que la leyenda sea parte del HTML final descargado,
-    # debemos insertarla de una manera que Folium la reconozca o añadirla manualmente.
-    # Una forma simple es añadir el CSS al mapa directamente y el HTML de la leyenda como un marcador oculto.
     mapa.get_root().header.add_child(folium.Element(css_html))
     mapa.get_root().html.add_child(folium.Element(leyenda_html))
 
@@ -119,12 +114,10 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
     centro = [df[col_lat].mean(), df[col_lon].mean()]
     mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
 
-    # Colores para los tipos de incidente
     tipos_unicos = df[col_tipo].unique()
     colores = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33', '#a65628', '#f781bf']
     color_map = {tipo: colores[i % len(colores)] for i, tipo in enumerate(tipos_unicos)}
 
-    # CAPA DE COLONIAS
     nombres_originales = {}
     for feature in gj_data['features']:
         if campo_geojson in feature['properties']:
@@ -139,7 +132,6 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
         tooltip=folium.GeoJsonTooltip(fields=[campo_geojson], aliases=['Colonia:'])
     ).add_to(mapa)
     
-    # CAPA DE NOMBRES
     capa_nombres = folium.FeatureGroup(name="Nombres de Colonias", show=True).add_to(mapa)
     for feature in gj_data['features']:
         centroide = obtener_centroide(feature)
@@ -151,7 +143,6 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                 icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF; white-space: nowrap;">{nombre_display}</div>')
             ).add_to(capa_nombres)
 
-    # CAPA DE INCIDENTES (PUNTOS)
     capa_incidentes = folium.FeatureGroup(name="Incidentes", show=True).add_to(mapa)
     for _, row in df.iterrows():
         popup_html = f"<b>Tipo:</b> {row[col_tipo]}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Fecha:</b> {row['Fecha Original']}"
@@ -166,12 +157,11 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             tooltip=row[col_tipo]
         ).add_to(capa_incidentes)
 
-    # CAPA DE CALOR
     capa_calor = folium.FeatureGroup(name="Mapa de Calor", show=True).add_to(mapa)
     HeatMap(df[[col_lat, col_lon]].values, radius=15).add_to(capa_calor)
 
     folium.LayerControl(collapsed=False).add_to(mapa)
-    agregar_leyenda_html(mapa, color_map) # <--- LLAMADA A LA FUNCIÓN DE LEYENDA
+    agregar_leyenda_html(mapa, color_map)
 
     return mapa
 
@@ -180,7 +170,6 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
 st.title("🗺️ Visualizador de Mapas de Riesgos")
 st.markdown("Sube tus archivos de incidentes y el mapa de colonias para generar una visualización interactiva.")
 
-# --- BARRA LATERAL CON CONTROLES ---
 with st.sidebar:
     st.header("⚙️ Configuración")
 
@@ -218,7 +207,6 @@ with st.sidebar:
         columnas_esenciales = [col_lat, col_lon, col_colonia, col_fecha, col_tipo, campo_geojson_sel]
         
         if all(columnas_esenciales):
-            # PROCESAMIENTO
             df_proc = df.copy()
             df_proc['Fecha Original'] = df_proc[col_fecha].astype(str)
             df_proc[col_fecha] = pd.to_datetime(df_proc[col_fecha], errors='coerce')
@@ -233,7 +221,6 @@ with st.sidebar:
 
             st.subheader("3. Filtra los datos")
             
-            # Filtro por fecha
             if not df_proc.empty and col_fecha in df_proc.columns:
                 fecha_min_data = df_proc[col_fecha].min().date()
                 fecha_max_data = df_proc[col_fecha].max().date()
@@ -243,10 +230,9 @@ with st.sidebar:
                 )
             else:
                 st.warning("No hay datos de fecha válidos para filtrar.")
-                fecha_inicio, fecha_fin = None, None # Asegurarse de que no se usen fechas inválidas
-                df_final = pd.DataFrame() # Vaciar df_final si no hay fechas
+                fecha_inicio, fecha_fin = None, None
+                df_final = pd.DataFrame() 
             
-            # Filtro por tipo de incidente
             tipos_disponibles = sorted(df_proc[col_tipo].unique())
             tipos_seleccionados = st.multiselect(
                 "Tipos de incidente a mostrar:",
@@ -254,7 +240,6 @@ with st.sidebar:
                 default=tipos_disponibles
             )
             
-            # Aplicar filtros solo si las fechas son válidas
             if fecha_inicio and fecha_fin:
                 df_final = df_proc[
                     (df_proc[col_fecha].dt.date >= fecha_inicio) &
@@ -262,7 +247,7 @@ with st.sidebar:
                     (df_proc[col_tipo].isin(tipos_seleccionados))
                 ]
             else:
-                df_final = pd.DataFrame() # Si las fechas no son válidas, df_final está vacío
+                df_final = pd.DataFrame() 
 
 # --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
 if 'df_final' in locals() and not df_final.empty:
@@ -274,25 +259,21 @@ if 'df_final' in locals() and not df_final.empty:
     
     mapa_final = crear_mapa(df_final, gj_data, campo_geojson_sel, col_lat, col_lon, col_colonia, col_tipo)
     
-    # Mostrar el mapa interactivo
     st_folium(mapa_final, width=1200, height=600, returned_objects=[])
 
-    # Botón de Descarga
     st.markdown("---")
     st.subheader("Descargar Mapa")
     
-    # Para descargar el HTML, obtenemos el HTML del mapa Folium
-    mapa_html = mapa_final._repr_html_()
+    mapa_html_bytes = mapa_final._repr_html_().encode("utf-8")
     
     st.download_button(
         label="📥 Descargar Mapa como HTML",
-        data=mapa_html.encode("utf-8"),
+        data=mapa_html_bytes,
         file_name="mapa_de_riesgos.html",
         mime="text/html"
     )
 
 elif 'uploaded_data_file' in locals() and uploaded_data_file and uploaded_geojson_file:
-    # Este mensaje se muestra si se subieron archivos pero no hay datos después de filtros/procesamiento
     st.warning("⚠️ Faltan asignaciones de columnas o los filtros no devuelven resultados. Por favor, revisa tus selecciones en la barra lateral.")
 else:
-    st.info("👋 Sube tus archivos en la barra lateral para comenzar.")
+    st.info("👋 Sube tus archivos en la barra lateral para
