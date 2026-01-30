@@ -25,7 +25,6 @@ def limpiar_texto(texto):
     except: return str(texto).lower().strip()
 
 def obtener_centroide(feature):
-    """Calcula el centro del polígono para etiquetas"""
     try:
         geom = feature.get("geometry", {})
         gtype, coords = geom.get("type"), geom.get("coordinates", [])
@@ -38,87 +37,94 @@ def obtener_centroide(feature):
     except: return None
 
 def generar_color_categoria(texto, index):
-    """Genera colores distintivos para cada TIPO de incidente"""
-    # Paleta manual de colores fuertes para los primeros tipos
+    """Asigna un color único y consistente a cada tipo de incidente"""
+    # Paleta de colores vibrantes y distintivos
     paleta = [
-        '#E74C3C', # Rojo
-        '#3498DB', # Azul
-        '#F1C40F', # Amarillo
+        '#E74C3C', # Rojo (Alarma)
+        '#3498DB', # Azul (Agua)
+        '#F1C40F', # Amarillo (Precaución)
         '#9B59B6', # Morado
         '#2ECC71', # Verde
+        '#E91E63', # Rosa Fuerte
         '#1ABC9C', # Turquesa
-        '#E91E63', # Rosa
-        '#34495E', # Azul oscuro
-        '#D35400', # Calabaza
+        '#34495E', # Azul Oscuro
+        '#D35400', # Naranja Quemado
         '#7F8C8D'  # Gris
     ]
     if index < len(paleta): return paleta[index]
     
-    # Generar color aleatorio consistente para tipos extra
+    # Generador para tipos extra
     h = int(hashlib.sha256(str(texto).encode()).hexdigest(), 16)
     hue = ((h % 1000)/1000.0 + (index * 0.618)) % 1.0
-    r,g,b = colorsys.hls_to_rgb(hue, 0.5, 0.7)
+    r,g,b = colorsys.hls_to_rgb(hue, 0.5, 0.6)
     return '#{:02x}{:02x}{:02x}'.format(int(r*255), int(g*255), int(b*255))
 
-def color_gradiente(valor, maximo):
-    """Escala de naranjas para la densidad"""
-    if maximo == 0 or valor == 0: return '#ffffff'
-    paleta = ['#FFF3E0', '#FFE0B2', '#FFCC80', '#FFB74D', '#FFA726', '#FF9800', '#FB8C00', '#F57C00', '#EF6C00', '#E65100']
-    ratio = valor / maximo
-    if ratio > 1: ratio = 1
-    idx = int(ratio * (len(paleta)-1))
-    return paleta[idx]
-
-def agregar_leyenda_combinada(mapa, items_tipos, mostrar_gradiente=False):
-    """Crea una leyenda que explica los colores de los puntos"""
-    
+def agregar_leyenda_dinamica(mapa, items_tipos):
+    """Leyenda unificada: el color aplica tanto al punto como a la zona predominante"""
     html = """
     <div style="position: fixed; bottom: 30px; left: 30px; width: 230px; max-height: 350px; 
     overflow-y: auto; z-index:9999; background: white; border: 2px solid grey; border-radius: 8px; padding: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+    <b style="font-size:14px; border-bottom: 1px solid #ccc; display:block; margin-bottom:5px;">Clasificación de Riesgos</b>
+    <div style="font-size:10px; color:#555; margin-bottom:8px;">
+    <i>El color de la colonia indica el riesgo predominante. La intensidad indica la cantidad.</i>
+    </div>
     """
     
-    # 1. Sección de Tipos (Puntos)
-    html += '<b style="font-size:14px; border-bottom: 1px solid #ccc; display:block; margin-bottom:5px;">Tipos de Incidente</b>'
     for txt, col in items_tipos.items():
-        html += f'<div style="margin:3px 0; font-size:12px; display:flex; align-items:center;"><span style="background:{col};width:10px;height:10px;display:inline-block;margin-right:8px;border-radius:50%;border:1px solid #333;"></span>{txt.title()}</div>'
+        html += f'<div style="margin:3px 0; font-size:12px; display:flex; align-items:center;"><span style="background:{col};width:12px;height:12px;display:inline-block;margin-right:8px;border-radius:2px;border:1px solid #333;"></span>{txt.title()}</div>'
     
-    # 2. Sección de Gradiente (Fondo) - Si aplica
-    if mostrar_gradiente:
-        html += '<div style="margin-top:10px; border-top:1px solid #ccc; padding-top:5px;">'
-        html += '<b style="font-size:12px;">Intensidad (Fondo Colonia)</b>'
-        html += '<div style="background: linear-gradient(to right, #FFF3E0, #E65100); height: 10px; width: 100%; border:1px solid #ccc; margin-top:3px;"></div>'
-        html += '<div style="display:flex; justify-content:space-between; font-size:10px;"><span>Baja</span><span>Alta</span></div>'
-        html += '</div>'
-
     html += "</div>"
     mapa.get_root().html.add_child(folium.Element(html))
 
-# --- FUNCIÓN PRINCIPAL DEL MAPA ---
+# --- LÓGICA DEL MAPA ---
 
 def crear_mapa(df, gj_data, config, opciones):
     try:
         centro = [df[config['lat']].mean(), df[config['lon']].mean()]
         m = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron", control_scale=True)
 
-        # 1. Definir Colores de Tipos (Categorías)
+        # 1. Definir Colores (Mapa de Categorías)
         tipos = sorted(df[config['tip']].unique())
         colores_tipos = {t: generar_color_categoria(t, i) for i, t in enumerate(tipos)}
         
-        # Conteo para el degradado
-        conteo_colonia = df[config['col']].value_counts().to_dict()
-        max_val = max(conteo_colonia.values()) if conteo_colonia else 1
+        # 2. Análisis por Colonia (Dominancia y Cantidad)
+        # Agrupamos para saber: Total de incidentes Y cuál es el más común (Moda)
+        grupo_colonia = df.groupby(config['col'])[config['tip']].agg(
+            total='count',
+            moda=lambda x: x.mode().iloc[0] if not x.mode().empty else None
+        )
+        
+        dict_total = grupo_colonia['total'].to_dict()
+        dict_moda = grupo_colonia['moda'].to_dict()
+        max_val = max(dict_total.values()) if dict_total else 1
 
-        # 2. Capa Polígonos (Fondo)
+        # 3. Capa Polígonos (Colonias) - LÓGICA NUEVA
         def estilo(feature):
             nom = feature['properties'].get(config['c_geo'], '') 
+            
             if opciones['gradiente']:
-                val = conteo_colonia.get(nom, 0)
-                # Usamos colores naranjas para el relleno
-                color_relleno = color_gradiente(val, max_val)
-                # Borde sutil
-                return {'fillColor': color_relleno, 'color': '#FF8F00', 'weight': 1, 'fillOpacity': 0.6 if val > 0 else 0.1}
+                cantidad = dict_total.get(nom, 0)
+                tipo_predominante = dict_moda.get(nom)
+                
+                if cantidad > 0 and tipo_predominante:
+                    # Obtenemos el color del tipo de incidente predominante
+                    color_base = colores_tipos.get(tipo_predominante, '#808080')
+                    
+                    # Calculamos opacidad basada en la cantidad (Gradiente de intensidad)
+                    # Mínimo 0.2 (para que se vea algo) hasta 0.8 (muy sólido)
+                    ratio = cantidad / max_val
+                    opacidad = 0.2 + (0.6 * ratio)
+                    
+                    return {
+                        'fillColor': color_base,
+                        'color': color_base, # El borde del mismo color
+                        'weight': 2,
+                        'fillOpacity': opacidad
+                    }
+                else:
+                    return {'fillColor': '#ffffff', 'color': '#bdc3c7', 'weight': 1, 'fillOpacity': 0.05}
             else:
-                return {'fillColor': '#ffffff', 'color': '#bdc3c7', 'weight': 1, 'fillOpacity': 0.1}
+                return {'fillColor': '#ffffff', 'color': '#bdc3c7', 'weight': 1, 'fillOpacity': 0.05}
 
         # Preparar GeoJSON
         nombres_etiquetas = {}
@@ -126,53 +132,56 @@ def crear_mapa(df, gj_data, config, opciones):
             orig = f['properties'].get(config['c_geo_raw'])
             clean = limpiar_texto(orig)
             f['properties'][config['c_geo']] = clean 
-            f['properties']['_count'] = conteo_colonia.get(clean, 0)
+            
+            # Datos para Tooltip
+            cant = dict_total.get(clean, 0)
+            tipo_dom = dict_moda.get(clean, 'N/A')
+            f['properties']['_info'] = f"{cant} (Mayoría: {tipo_dom.title()})" if cant > 0 else "Sin reportes"
+            
             if clean: nombres_etiquetas[clean] = orig
 
         folium.GeoJson(
             gj_data,
-            name="Colonias (Fondo)",
+            name="Colonias (Riesgo Predominante)",
             style_function=estilo,
             tooltip=folium.GeoJsonTooltip(
-                fields=[config['c_geo_raw'], '_count'], 
-                aliases=['Colonia:', 'Total Reportes:'], 
+                fields=[config['c_geo_raw'], '_info'], 
+                aliases=['Colonia:', 'Detalle:'], 
                 localize=True
             )
         ).add_to(m)
 
-        # 3. Capa Puntos (Incidentes) - SIEMPRE VISIBLE Y COLOREADA
-        # Nota: Show=True asegura que se vean encima del degradado
-        fg_puntos = folium.FeatureGroup(name="Incidentes (Puntos)", show=True)
-        
+        # 4. Capa Puntos (Incidentes)
+        fg_puntos = folium.FeatureGroup(name="Puntos Individuales", show=True)
         for _, row in df.iterrows():
             try:
                 tipo = row[config['tip']]
                 color = colores_tipos.get(tipo, '#333')
                 
                 popup_content = f"""
-                <div style="width:200px; font-family:sans-serif;">
-                    <b style="color:{color}; font-size:14px;">{tipo.upper()}</b><br>
-                    <div style="background-color:{color}; height:2px; width:100%; margin:3px 0;"></div>
-                    <b>Ubicación:</b> {row[config['col']].title()}<br>
-                    <b>Fecha:</b> {row[config['fec']].strftime('%d/%m/%Y')}<br>
+                <div style="font-family:sans-serif; width:180px;">
+                    <b style="color:{color}; font-size:13px;">{tipo.upper()}</b><br>
+                    <div style="background:{color}; height:2px; margin:2px 0;"></div>
+                    {row[config['col']].title()}<br>
+                    <small style="color:#666">{row[config['fec']].strftime('%d/%m/%Y')}</small>
                 </div>
                 """
                 
                 folium.CircleMarker(
                     [row[config['lat']], row[config['lon']]],
-                    radius=6, # Un poco más grandes para que destaquen sobre el naranja
-                    color='white', # Borde blanco para separar del fondo
+                    radius=5, 
+                    color='white', # Borde blanco vital para contraste sobre fondo de color
                     weight=1.5,
                     fill=True,
-                    fill_color=color, # COLOR CATEGÓRICO
-                    fill_opacity=1.0,
-                    popup=folium.Popup(popup_content, max_width=250), 
-                    tooltip=f"{tipo.title()}"
+                    fill_color=color,
+                    fill_opacity=1.0, # Punto sólido
+                    popup=folium.Popup(popup_content, max_width=200), 
+                    tooltip=tipo.title()
                 ).add_to(fg_puntos)
             except: continue
         m.add_child(fg_puntos)
 
-        # 4. Etiquetas de Nombres (Opcional en menú capas)
+        # 5. Etiquetas de Nombres
         fg_nombres = folium.FeatureGroup(name="Etiquetas Nombres", show=False)
         for f in gj_data['features']:
             centro = obtener_centroide(f)
@@ -181,19 +190,18 @@ def crear_mapa(df, gj_data, config, opciones):
                 display = nombres_etiquetas.get(nombre, nombre).title()
                 folium.Marker(
                     location=centro,
-                    icon=folium.DivIcon(html=f'<div style="font-size:10px; font-weight:bold; color:#555; text-shadow:1px 1px 0 #fff;">{display}</div>')
+                    icon=folium.DivIcon(html=f'<div style="font-size:10px; font-weight:bold; color:#444; text-shadow:1px 1px 0 rgba(255,255,255,0.8);">{display}</div>')
                 ).add_to(fg_nombres)
         m.add_child(fg_nombres)
 
-        # 5. Capa Calor (Opcional)
+        # 6. Mapa de Calor
         if opciones['calor']:
             heat_data = [[row[config['lat']], row[config['lon']]] for _, row in df.iterrows()]
             HeatMap(heat_data, radius=15, blur=12, name="Mapa de Calor").add_to(m)
 
-        # 6. LEYENDA (Controlada)
+        # 7. Leyenda
         if opciones['leyenda']:
-            # Pasamos los colores de los tipos Y el estado del gradiente
-            agregar_leyenda_combinada(m, colores_tipos, mostrar_gradiente=opciones['gradiente'])
+            agregar_leyenda_dinamica(m, colores_tipos)
 
         folium.LayerControl(collapsed=True).add_to(m)
         return m
@@ -204,7 +212,7 @@ def crear_mapa(df, gj_data, config, opciones):
 
 # --- INTERFAZ STREAMLIT ---
 
-st.title("🗺️ Visualizador de Riesgos")
+st.title("🗺️ Mapa de Riesgos Predominantes")
 
 if 'procesado' not in st.session_state: st.session_state.procesado = False
 
@@ -264,10 +272,14 @@ if st.session_state.procesado:
         sel_tips = st.multiselect("Tipos", all_tips, default=all_tips)
         
         st.markdown("---")
-        st.subheader("Capas")
-        opt_gradiente = st.checkbox("🔶 Fondo Colonias (Densidad)", value=True, help="Colorea el fondo de las colonias naranja según la cantidad total.")
-        opt_calor = st.checkbox("🔥 Mapa de Calor (Difuso)", value=False)
-        opt_leyenda = st.checkbox("📝 Ver Leyenda Detallada", value=True)
+        st.subheader("Visualización")
+        
+        st.markdown("**Estilo de Colonias**")
+        opt_gradiente = st.checkbox("🎨 Colorear por Riesgo Predominante", value=True, help="La colonia toma el color del incidente más frecuente.")
+        
+        st.markdown("**Capas Extra**")
+        opt_calor = st.checkbox("🔥 Mapa de Calor", value=False)
+        opt_leyenda = st.checkbox("📝 Mostrar Leyenda", value=True)
 
     with col2:
         df_show = df[df[cfg['tip']].isin(sel_tips)]
@@ -281,8 +293,8 @@ if st.session_state.procesado:
             
             buffer = BytesIO()
             mapa.save(buffer, close_file=False)
-            st.download_button("💾 Descargar HTML", buffer.getvalue(), "mapa.html", "text/html")
+            st.download_button("💾 Descargar Mapa HTML", buffer.getvalue(), "mapa_riesgo_predominante.html", "text/html")
         else:
             st.warning("No hay datos visibles.")
 else:
-    st.info("Por favor carga los archivos.")
+    st.info("Sube tus archivos para comenzar.")
