@@ -25,13 +25,22 @@ def limpiar_texto(texto):
     except: return str(texto).lower().strip()
 
 def obtener_centroide(feature):
+    """Calcula el centro del polígono para poner la etiqueta de texto"""
     try:
         geom = feature.get("geometry", {})
         gtype, coords = geom.get("type"), geom.get("coordinates", [])
-        if gtype == "Polygon": poly = coords[0]
-        elif gtype == "MultiPolygon": poly = max([p[0] for p in coords], key=len, default=[])
-        else: return None
+        
+        if gtype == "Polygon": 
+            poly = coords[0]
+        elif gtype == "MultiPolygon": 
+            # Tomar el polígono más grande del multipolígono
+            poly = max([p[0] for p in coords], key=len, default=[])
+        else: 
+            return None
+            
         if not poly: return None
+        
+        # Calcular promedio de lats y lons
         lons, lats = zip(*poly)
         return (sum(lats)/len(lats), sum(lons)/len(lons))
     except: return None
@@ -46,18 +55,24 @@ def generar_color_categoria(texto, index):
 
 def color_gradiente(valor, maximo):
     if maximo == 0 or valor == 0: return '#ffffff'
+    # Gradiente de blanco a naranja oscuro
     paleta = ['#FFF3E0', '#FFE0B2', '#FFCC80', '#FFB74D', '#FFA726', '#FF9800', '#FB8C00', '#F57C00', '#EF6C00', '#E65100']
-    idx = int((valor/maximo) * (len(paleta)-1))
+    
+    # Calcular índice proporcional
+    ratio = valor / maximo
+    if ratio > 1: ratio = 1
+    idx = int(ratio * (len(paleta)-1))
     return paleta[idx]
 
 def agregar_leyenda_flotante(mapa, items, titulo="Leyenda"):
+    """Inyecta HTML crudo en el mapa para la leyenda"""
     html = f"""
     <div style="position: fixed; bottom: 30px; left: 30px; width: 220px; max-height: 300px; 
-    overflow-y: auto; z-index:9999; background: white; border: 2px solid grey; border-radius: 8px; padding: 10px;">
-    <b>{titulo}</b><br>
+    overflow-y: auto; z-index:9999; background: white; border: 2px solid grey; border-radius: 8px; padding: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+    <b style="font-size:14px; border-bottom: 1px solid #ccc; display:block; margin-bottom:5px;">{titulo}</b>
     """
     for txt, col in items.items():
-        html += f'<div style="margin:3px 0;"><span style="background:{col};width:12px;height:12px;display:inline-block;margin-right:5px;border:1px solid #333;"></span>{txt.title()}</div>'
+        html += f'<div style="margin:3px 0; font-size:12px; display:flex; align-items:center;"><span style="background:{col};width:12px;height:12px;display:inline-block;margin-right:8px;border:1px solid #333;border-radius:2px;"></span>{txt.title()}</div>'
     html += "</div>"
     mapa.get_root().html.add_child(folium.Element(html))
 
@@ -65,109 +80,149 @@ def agregar_leyenda_flotante(mapa, items, titulo="Leyenda"):
 
 def crear_mapa(df, gj_data, config, opciones):
     """
-    opciones es un dict: {'gradiente': bool, 'calor': bool, 'leyenda': bool}
+    opciones: {'gradiente': bool, 'calor': bool, 'leyenda': bool}
     """
     try:
         centro = [df[config['lat']].mean(), df[config['lon']].mean()]
-        m = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
+        m = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron", control_scale=True)
 
-        # 1. Preparar Datos
+        # 1. Preparar Datos y Colores
         tipos = sorted(df[config['tip']].unique())
         colores_tipos = {t: generar_color_categoria(t, i) for i, t in enumerate(tipos)}
         
+        # Conteo para el degradado
         conteo_colonia = df[config['col']].value_counts().to_dict()
         max_val = max(conteo_colonia.values()) if conteo_colonia else 1
 
-        # 2. Capa Polígonos (Colonias)
+        # 2. Capa Polígonos (Colonias) con Degradado opcional
         def estilo(feature):
-            nom = feature['properties'].get(config['c_geo'])
+            # Usamos el nombre limpio que insertamos en el paso anterior
+            nom = feature['properties'].get(config['c_geo'], '') 
+            
             if opciones['gradiente']:
                 val = conteo_colonia.get(nom, 0)
-                return {
-                    'fillColor': color_gradiente(val, max_val),
-                    'color': '#d35400' if val > 0 else '#bdc3c7',
-                    'weight': 2 if val > 0 else 1,
-                    'fillOpacity': 0.7 if val > 0 else 0.1
-                }
+                color_relleno = color_gradiente(val, max_val)
+                borde = '#E65100' if val > 0 else '#bdc3c7'
+                grosor = 2 if val > 0 else 1
+                opacidad = 0.75 if val > 0 else 0.1
+                return {'fillColor': color_relleno, 'color': borde, 'weight': grosor, 'fillOpacity': opacidad}
             else:
-                return {'fillColor': '#fff', 'color': '#bdc3c7', 'weight': 1, 'fillOpacity': 0.1}
+                # Estilo plano si no hay degradado
+                return {'fillColor': '#ffffff', 'color': '#bdc3c7', 'weight': 1, 'fillOpacity': 0.1}
 
-        # Preparar GeoJSON con nombres limpios para el match
+        # Preprocesar GeoJSON para asegurar match de nombres
+        nombres_para_etiquetas = {} # Guardar nombre original para mostrarlo bonito
+        
         for f in gj_data['features']:
-            orig = f['properties'].get(config['c_geo_raw']) # Usar nombre original del archivo
+            orig = f['properties'].get(config['c_geo_raw']) # Nombre tal cual viene en el archivo
             clean = limpiar_texto(orig)
-            f['properties'][config['c_geo']] = clean # Asignar limpio para tooltip
+            
+            # Guardamos datos en las propiedades del feature para usarlos en estilo y tooltip
+            f['properties'][config['c_geo']] = clean 
             f['properties']['_count'] = conteo_colonia.get(clean, 0)
+            
+            if clean:
+                nombres_para_etiquetas[clean] = orig
 
+        # Añadir capa GeoJSON
         folium.GeoJson(
             gj_data,
-            name="Colonias",
+            name="Colonias (Polígonos)",
             style_function=estilo,
-            tooltip=folium.GeoJsonTooltip(fields=[config['c_geo'], '_count'], aliases=['Colonia:', 'Incidentes:'], localize=True)
+            tooltip=folium.GeoJsonTooltip(
+                fields=[config['c_geo_raw'], '_count'] if opciones['gradiente'] else [config['c_geo_raw']], 
+                aliases=['Colonia:', 'Incidentes:'] if opciones['gradiente'] else ['Colonia:'], 
+                localize=True
+            )
         ).add_to(m)
 
-        # 3. Capa Puntos (Incidentes)
-        # Si el gradiente está activo, ocultamos puntos por defecto para limpieza visual, pero se pueden activar en el menú capas
+        # 3. Capa de Nombres (Etiquetas) - ¡RECUPERADA!
+        fg_nombres = folium.FeatureGroup(name="Etiquetas Colonias", show=False) # Show=False por defecto para no saturar
+        for f in gj_data['features']:
+            centro = obtener_centroide(f)
+            nombre_limpio = f['properties'].get(config['c_geo'])
+            
+            if centro and nombre_limpio:
+                nombre_display = nombres_para_etiquetas.get(nombre_limpio, nombre_limpio).title()
+                folium.Marker(
+                    location=centro,
+                    icon=folium.DivIcon(
+                        html=f'<div style="font-family: Arial; font-size: 10px; color: #444; text-shadow: 1px 1px 0px #fff; white-space: nowrap;">{nombre_display}</div>'
+                    )
+                ).add_to(fg_nombres)
+        m.add_child(fg_nombres)
+
+        # 4. Capa Puntos (Incidentes)
+        # Si el gradiente está activo, ocultamos los puntos por defecto, pero se pueden activar en el control de capas
         fg_puntos = folium.FeatureGroup(name="Puntos (Reportes)", show=not opciones['gradiente'])
         for _, row in df.iterrows():
             try:
                 tipo = row[config['tip']]
                 color = colores_tipos.get(tipo, '#333')
-                html = f"<b>{tipo.upper()}</b><br>{row[config['col']].title()}<br>{row[config['fec']].date()}"
+                
+                popup_content = f"""
+                <div style="width:200px">
+                    <b style="color:{color}">{tipo.upper()}</b><br>
+                    {row[config['col']].title()}<br>
+                    <small>{row[config['fec']].date()}</small>
+                </div>
+                """
+                
                 folium.CircleMarker(
                     [row[config['lat']], row[config['lon']]],
                     radius=5, color='white', weight=1, fill_color=color, fill_opacity=0.9,
-                    popup=folium.Popup(html, max_width=200), tooltip=tipo
+                    popup=folium.Popup(popup_content, max_width=250), 
+                    tooltip=tipo
                 ).add_to(fg_puntos)
             except: continue
-        fg_puntos.add_to(m)
+        m.add_child(fg_puntos)
 
-        # 4. Capa Mapa de Calor (Heatmap)
+        # 5. Capa Mapa de Calor
         if opciones['calor']:
             heat_data = [[row[config['lat']], row[config['lon']]] for _, row in df.iterrows()]
             fg_calor = folium.FeatureGroup(name="Mapa de Calor", show=True)
             HeatMap(heat_data, radius=15, blur=10).add_to(fg_calor)
-            fg_calor.add_to(m)
+            m.add_child(fg_calor)
 
-        # 5. Leyenda
+        # 6. Leyenda (Lógica Condicional Estricta)
         if opciones['leyenda']:
             if opciones['gradiente']:
-                # Leyenda de gradiente (simplificada)
+                # Leyenda de gradiente
                 items_grad = {'Alta Incidencia': '#E65100', 'Media': '#FFA726', 'Baja': '#FFF3E0', 'Sin Reportes': '#FFFFFF'}
-                agregar_leyenda_flotante(m, items_grad, "Intensidad (Reportes)")
+                agregar_leyenda_flotante(m, items_grad, "Intensidad (Naranja)")
             else:
-                # Leyenda de tipos
+                # Leyenda de tipos de incidente
                 agregar_leyenda_flotante(m, colores_tipos, "Tipos de Incidente")
 
-        # 6. Controles Extra
-        folium.LayerControl().add_to(m)
+        # 7. Controles Finales
+        folium.LayerControl(collapsed=True).add_to(m)
         
         return m
 
     except Exception as e:
-        st.error(f"Error mapa: {e}")
+        st.error(f"Error generando mapa: {e}")
         return None
 
-# --- INTERFAZ ---
+# --- INTERFAZ STREAMLIT ---
 
-st.title("🗺️ Visualizador de Riesgos 2.0")
+st.title("🗺️ Visualizador de Riesgos")
 
-# Session State para persistencia
+# Estado de sesión
 if 'procesado' not in st.session_state: st.session_state.procesado = False
 
 with st.sidebar:
-    st.header("1. Archivos")
+    st.header("1. Carga de Datos")
     f_data = st.file_uploader("Excel/CSV Incidentes", type=['xlsx','csv'])
     f_geo = st.file_uploader("GeoJSON Colonias", type=['geojson','json'])
 
     if f_data and f_geo:
-        # Carga Rápida
         try:
+            # Lectura preliminar
             if f_data.name.endswith('xlsx'): df_raw = pd.read_excel(f_data)
             else: df_raw = pd.read_csv(f_data)
             gj = json.load(f_geo)
             
-            st.header("2. Columnas")
+            st.subheader("Configuración de Columnas")
             cols = df_raw.columns.tolist()
             c_lat = st.selectbox("Latitud", cols)
             c_lon = st.selectbox("Longitud", cols)
@@ -179,6 +234,7 @@ with st.sidebar:
             c_geo_raw = st.selectbox("Colonia (GeoJSON)", props)
 
             if st.button("Procesar Datos"):
+                # Limpieza y guardado en sesión
                 df = df_raw.copy()
                 df[c_lat] = pd.to_numeric(df[c_lat], errors='coerce')
                 df[c_lon] = pd.to_numeric(df[c_lon], errors='coerce')
@@ -192,8 +248,8 @@ with st.sidebar:
                 st.session_state.config = {
                     'lat': c_lat, 'lon': c_lon, 'col': c_col, 
                     'tip': c_tip, 'fec': c_fec, 
-                    'c_geo': 'colonia_limpia', # Nombre interno
-                    'c_geo_raw': c_geo_raw     # Nombre original en el archivo
+                    'c_geo': 'colonia_limpia_interna', 
+                    'c_geo_raw': c_geo_raw
                 }
                 st.session_state.procesado = True
                 st.rerun()
@@ -205,23 +261,25 @@ if st.session_state.procesado:
     gj = st.session_state.gj
     cfg = st.session_state.config
 
-    # FILTROS Y OPCIONES (Fuera del form para actualización instantánea)
-    col_ctrl1, col_ctrl2 = st.columns([1, 3])
+    # PANEL DE CONTROL (Main Area)
+    col_filtros, col_mapa = st.columns([1, 4])
     
-    with col_ctrl1:
+    with col_filtros:
         st.subheader("Filtros")
         all_tips = sorted(df[cfg['tip']].unique())
         sel_tips = st.multiselect("Tipos", all_tips, default=all_tips)
         
         st.markdown("---")
-        st.subheader("Visualización")
+        st.subheader("Opciones")
         
-        # CHECKBOXES CLAROS Y SEPARADOS
-        opt_gradiente = st.checkbox("🔶 Activar Degradado (Colonias)", value=True, help="Colorea las colonias naranja según cantidad")
-        opt_calor = st.checkbox("🔥 Activar Mapa de Calor", value=False, help="Muestra manchas de calor rojas/azules")
-        opt_leyenda = st.checkbox("📝 Mostrar Leyenda", value=True, help="Muestra el cuadro explicativo flotante")
+        # Checkboxes de control
+        opt_gradiente = st.checkbox("🔶 Degradado Naranja", value=True, help="Pinta las colonias según cantidad de incidentes")
+        opt_calor = st.checkbox("🔥 Mapa de Calor", value=False, help="Manchas de calor clásicas")
+        opt_leyenda = st.checkbox("📝 Ver Leyenda", value=True, help="Muestra/Oculta el cuadro explicativo")
+        
+        st.info("💡 Tip: Puedes activar las etiquetas de nombres en el icono de capas (arriba-derecha del mapa).")
 
-    with col_ctrl2:
+    with col_mapa:
         df_show = df[df[cfg['tip']].isin(sel_tips)]
         
         if not df_show.empty:
@@ -231,15 +289,18 @@ if st.session_state.procesado:
                 'leyenda': opt_leyenda
             }
             
+            # Generar mapa
             mapa = crear_mapa(df_show, gj, cfg, opciones)
-            st_folium(mapa, width="100%", height=600, returned_objects=[])
+            
+            # Renderizar
+            st_folium(mapa, width="100%", height=650, returned_objects=[])
             
             # Descarga
             buffer = BytesIO()
             mapa.save(buffer, close_file=False)
             st.download_button("💾 Descargar HTML", buffer.getvalue(), "mapa_riesgos.html", "text/html")
         else:
-            st.warning("Sin datos con filtros actuales")
+            st.warning("No hay datos para mostrar con los filtros actuales.")
 
 else:
-    st.info("👈 Carga tus archivos en el menú lateral")
+    st.info("👈 Por favor carga tus archivos y configura las columnas en el menú lateral.")
