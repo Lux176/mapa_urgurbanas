@@ -24,7 +24,7 @@ if 'datos_procesados' not in st.session_state:
 if 'mapa_config' not in st.session_state:
     st.session_state.mapa_config = {}
 
-# --- FUNCIONES DE PROCESAMIENTO CORREGIDAS ---
+# --- FUNCIONES DE PROCESAMIENTO ---
 
 def limpiar_texto(texto):
     """Normaliza un texto a minúsculas, sin acentos y unifica reportes."""
@@ -38,7 +38,6 @@ def limpiar_texto(texto):
             .lower() \
             .strip()
 
-        # Unificación de tipos similares
         if texto_limpio.startswith('deslizamiento de tierra/talud'):
             return 'deslizamiento de tierra/talud'
         
@@ -68,25 +67,44 @@ def obtener_centroide(feature):
         return None
 
 def generar_color_por_texto(texto, index, total):
-    """Genera un color único y bien diferenciado a partir del texto y índice."""
+    """Genera un color único para los puntos (incidentes)."""
     try:
-        # Usar hash para consistencia pero añadir índice para evitar repeticiones
         hash_value = int(hashlib.sha256(str(texto).encode()).hexdigest(), 16)
-        
-        # CORRECCIÓN: Valores normalizados entre 0-1 para colorsys
-        hue = ((hash_value % 1000) / 1000.0 + (index * 0.618033988749895)) % 1.0  # Usar ángulo áureo
-        saturation = 0.7 + 0.2 * (index % 3) / 3.0  # 0.7-0.9
-        lightness = 0.5 + 0.2 * (index % 4) / 4.0   # 0.5-0.7
-        
+        hue = ((hash_value % 1000) / 1000.0 + (index * 0.618033988749895)) % 1.0
+        saturation = 0.7 + 0.2 * (index % 3) / 3.0
+        lightness = 0.5 + 0.2 * (index % 4) / 4.0
         r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
         return f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
     except Exception:
-        # Fallback: colores predefinidos
         colores_fallback = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd']
         return colores_fallback[index % len(colores_fallback)]
 
+def obtener_color_naranja_gradiente(valor, maximo):
+    """Retorna un color naranja basado en la intensidad (valor vs maximo)."""
+    if maximo == 0 or valor == 0:
+        return '#ffffff' # Blanco si no hay incidentes
+    
+    # Paleta de naranjas: Desde muy claro hasta oscuro intenso
+    paleta_naranjas = [
+        '#FFF3E0', # Naranja muy muy claro (poca incidencia)
+        '#FFE0B2',
+        '#FFCC80',
+        '#FFB74D',
+        '#FFA726',
+        '#FF9800',
+        '#FB8C00',
+        '#F57C00',
+        '#EF6C00',
+        '#E65100'  # Naranja rojizo intenso (máxima incidencia)
+    ]
+    
+    # Calcular índice basado en porcentaje
+    ratio = valor / maximo
+    indice = int(ratio * (len(paleta_naranjas) - 1))
+    return paleta_naranjas[indice]
+
 def agregar_leyenda(mapa, color_map):
-    """Agrega una leyenda al mapa basada en los tipos de incidente."""
+    """Agrega leyenda de tipos de incidente."""
     try:
         legend_html = """
         <div style="
@@ -98,8 +116,7 @@ def agregar_leyenda(mapa, color_map):
             padding:10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
             <b>🟢 Leyenda de Incidentes</b><br>
         """
-        
-        for tipo, color in list(color_map.items())[:15]:  # Limitar a 15 tipos para no saturar
+        for tipo, color in list(color_map.items())[:15]:
             tipo_display = tipo.title() if len(tipo) <= 30 else tipo[:27] + "..."
             legend_html += f'<div style="margin:2px 0;"><span style="background-color:{color};width:12px;height:12px;display:inline-block;margin-right:5px;border:1px solid #000;border-radius:2px;"></span>{tipo_display}</div>'
         
@@ -111,7 +128,7 @@ def agregar_leyenda(mapa, color_map):
     except Exception as e:
         st.error(f"Error al crear leyenda: {e}")
 
-def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo, col_fecha):
+def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_tipo, col_fecha, usar_intensidad=False):
     """Crea y configura el mapa Folium con todas sus capas."""
     try:
         # Calcular centro del mapa
@@ -123,41 +140,68 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
             control_scale=True
         )
 
-        # Generar mapa de colores
+        # Generar mapa de colores para PUNTOS
         tipos_unicos = df[col_tipo].unique()
         color_map = {
             tipo: generar_color_por_texto(tipo, idx, len(tipos_unicos)) 
             for idx, tipo in enumerate(tipos_unicos)
         }
 
-        # Procesar nombres de colonias
+        # --- LÓGICA DE DENSIDAD POR COLONIA (NUEVO) ---
+        conteo_por_colonia = {}
+        max_incidentes = 0
+        
+        if usar_intensidad:
+            # Contar incidentes por colonia normalizada
+            counts = df[col_colonia].value_counts()
+            conteo_por_colonia = counts.to_dict()
+            max_incidentes = counts.max() if not counts.empty else 1
+
+        # Procesar GeoJSON y Nombres
         nombres_originales = {}
         for feature in gj_data['features']:
             if campo_geojson in feature['properties']:
                 original = feature['properties'][campo_geojson]
                 limpio = limpiar_texto(original)
                 feature['properties'][campo_geojson] = limpio
+                feature['properties']['_conteo_temp'] = conteo_por_colonia.get(limpio, 0) # Guardar conteo en feature
                 nombres_originales[limpio] = original
 
-        # Polígonos de colonias
+        # --- DEFINIR ESTILO DE POLÍGONOS ---
+        def estilo_poligono(feature):
+            if usar_intensidad:
+                conteo = feature['properties'].get('_conteo_temp', 0)
+                color_relleno = obtener_color_naranja_gradiente(conteo, max_incidentes)
+                opacidad = 0.7 if conteo > 0 else 0.1
+                return {
+                    'fillColor': color_relleno,
+                    'color': '#FF8F00' if conteo > 0 else '#808080', # Borde naranja oscuro si hay datos
+                    'weight': 1 if conteo == 0 else 2,
+                    'fillOpacity': opacidad
+                }
+            else:
+                # Estilo Original (Blanco/Gris)
+                return {
+                    'fillColor': '#ffffff', 
+                    'color': '#808080', 
+                    'weight': 1, 
+                    'fillOpacity': 0.1
+                }
+
+        # Agregar Polígonos de colonias
         folium.GeoJson(
             gj_data, 
-            name='Límites de Colonias',
-            style_function=lambda x: {
-                'fillColor': '#ffffff', 
-                'color': '#808080', 
-                'weight': 1, 
-                'fillOpacity': 0.1
-            },
+            name='Intensidad por Colonia' if usar_intensidad else 'Límites de Colonias',
+            style_function=estilo_poligono,
             tooltip=folium.GeoJsonTooltip(
-                fields=[campo_geojson], 
-                aliases=['Colonia:'],
+                fields=[campo_geojson, '_conteo_temp'] if usar_intensidad else [campo_geojson], 
+                aliases=['Colonia:', 'Total Incidentes:'] if usar_intensidad else ['Colonia:'],
                 localize=True,
                 sticky=False
             )
         ).add_to(mapa)
 
-        # Nombres de colonias
+        # Nombres de colonias (Etiquetas)
         capa_nombres = folium.FeatureGroup(name="Nombres de Colonias", show=False)
         for feature in gj_data['features']:
             centroide = obtener_centroide(feature)
@@ -172,19 +216,16 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                 ).add_to(capa_nombres)
         mapa.add_child(capa_nombres)
 
-        # Capa de incidentes
-        capa_incidentes = folium.FeatureGroup(name="Puntos de Incidentes", show=True)
+        # Capa de incidentes (PUNTOS)
+        capa_incidentes = folium.FeatureGroup(name="Puntos de Incidentes", show=not usar_intensidad) # Ocultar puntos por defecto si usamos gradiente
         for _, row in df.iterrows():
             try:
-                # Formatear fecha de manera segura
                 fecha_str = str(row[col_fecha])
                 if hasattr(row[col_fecha], 'strftime'):
                     fecha_str = row[col_fecha].strftime('%d/%m/%Y')
                 
-                # Tooltip simple
                 tooltip_text = f"{row[col_tipo].title()} - {row[col_colonia].title()}"
                 
-                # Popup con información completa
                 popup_html = f"""
                 <div style="font-family: Arial; font-size: 12px; max-width: 250px;">
                     <h4 style="margin: 0 0 8px 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px;">
@@ -193,8 +234,7 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                     <b>Colonia:</b> {row[col_colonia].title()}<br>
                     <b>Tipo:</b> {row[col_tipo].title()}<br>
                     <b>Fecha:</b> {fecha_str}<br>
-                    <b>Coordenadas:</b><br>
-                    {row[col_lat]:.6f}, {row[col_lon]:.6f}
+                    <b>Coordenadas:</b> {row[col_lat]:.6f}, {row[col_lon]:.6f}
                 </div>
                 """
                 
@@ -209,13 +249,13 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
                     popup=folium.Popup(popup_html, max_width=300),
                     tooltip=folium.Tooltip(tooltip_text, sticky=True)
                 ).add_to(capa_incidentes)
-            except Exception as e:
-                continue  # Continuar con el siguiente punto si hay error
+            except Exception:
+                continue
 
         mapa.add_child(capa_incidentes)
 
-        # Mapa de calor
-        capa_calor = folium.FeatureGroup(name="Mapa de Calor", show=False)
+        # Mapa de calor (Heatmap tradicional)
+        capa_calor = folium.FeatureGroup(name="Mapa de Calor (Densidad)", show=False)
         HeatMap(
             df[[col_lat, col_lon]].values, 
             radius=15,
@@ -234,7 +274,7 @@ def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia, col_ti
         st.error(f"Error al crear el mapa: {str(e)}")
         return None
 
-# --- INTERFAZ DE STREAMLIT CORREGIDA ---
+# --- INTERFAZ DE STREAMLIT ---
 
 st.title("🗺️ Visualizador de Mapas de Riesgos")
 st.markdown("Sube tus archivos de incidentes y el mapa de colonias para generar una visualización interactiva.")
@@ -243,20 +283,11 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     st.subheader("1. Carga tus archivos")
     
-    uploaded_data_file = st.file_uploader(
-        "Archivo de incidentes (Excel o CSV)", 
-        type=['xlsx', 'csv'],
-        key="data_uploader"
-    )
-    uploaded_geojson_file = st.file_uploader(
-        "Archivo de colonias (GeoJSON)", 
-        type=['geojson', 'json'],
-        key="geojson_uploader"
-    )
+    uploaded_data_file = st.file_uploader("Archivo de incidentes (Excel o CSV)", type=['xlsx', 'csv'], key="data_uploader")
+    uploaded_geojson_file = st.file_uploader("Archivo de colonias (GeoJSON)", type=['geojson', 'json'], key="geojson_uploader")
 
     if uploaded_data_file and uploaded_geojson_file:
         try:
-            # Cargar archivos
             if uploaded_data_file.name.endswith('.xlsx'):
                 df = pd.read_excel(uploaded_data_file)
             else:
@@ -272,70 +303,31 @@ with st.sidebar:
         st.subheader("2. Asigna las columnas")
         columnas_disponibles = df.columns.tolist()
         
-        col_lat = st.selectbox(
-            "Columna de LATITUD:", 
-            columnas_disponibles, 
-            index=None,
-            key="lat_select"
-        )
-        col_lon = st.selectbox(
-            "Columna de LONGITUD:", 
-            columnas_disponibles, 
-            index=None,
-            key="lon_select"
-        )
-        col_colonia = st.selectbox(
-            "Columna de COLONIA:", 
-            columnas_disponibles, 
-            index=None,
-            key="colonia_select"
-        )
-        col_fecha = st.selectbox(
-            "Columna de FECHA:", 
-            columnas_disponibles, 
-            index=None,
-            key="fecha_select"
-        )
-        col_tipo = st.selectbox(
-            "Columna de TIPO DE INCIDENTE:", 
-            columnas_disponibles, 
-            index=None,
-            key="tipo_select"
-        )
+        col_lat = st.selectbox("Columna de LATITUD:", columnas_disponibles, index=None, key="lat_select")
+        col_lon = st.selectbox("Columna de LONGITUD:", columnas_disponibles, index=None, key="lon_select")
+        col_colonia = st.selectbox("Columna de COLONIA:", columnas_disponibles, index=None, key="colonia_select")
+        col_fecha = st.selectbox("Columna de FECHA:", columnas_disponibles, index=None, key="fecha_select")
+        col_tipo = st.selectbox("Columna de TIPO DE INCIDENTE:", columnas_disponibles, index=None, key="tipo_select")
 
         try:
             campos_geojson = list(gj_data['features'][0]['properties'].keys())
-            campo_geojson_sel = st.selectbox(
-                "Campo de nombre de colonia en GeoJSON:", 
-                campos_geojson, 
-                index=None,
-                key="geojson_select"
-            )
+            campo_geojson_sel = st.selectbox("Campo de nombre de colonia en GeoJSON:", campos_geojson, index=None, key="geojson_select")
         except (IndexError, KeyError):
             st.error("Archivo GeoJSON no válido.")
             st.stop()
             
-        # Validar columnas esenciales
+        # Validar columnas
         columnas_esenciales = [col_lat, col_lon, col_colonia, col_fecha, col_tipo, campo_geojson_sel]
         
         if all(columnas_esenciales):
             try:
-                # Procesar datos
                 df_proc = df.copy()
-                
-                # Conservar fecha original como string
                 df_proc['Fecha_Original_Str'] = df_proc[col_fecha].astype(str)
-                
-                # Convertir tipos de datos
                 df_proc[col_fecha] = pd.to_datetime(df_proc[col_fecha], errors='coerce')
                 df_proc[col_lat] = pd.to_numeric(df_proc[col_lat], errors='coerce')
                 df_proc[col_lon] = pd.to_numeric(df_proc[col_lon], errors='coerce')
-                
-                # Limpiar textos
                 df_proc[col_colonia] = df_proc[col_colonia].apply(limpiar_texto)
                 df_proc[col_tipo] = df_proc[col_tipo].apply(limpiar_texto)
-                
-                # Filtrar datos válidos
                 df_proc = df_proc.dropna(subset=[col_lat, col_lon, col_fecha, col_colonia, col_tipo])
                 
                 if df_proc.empty:
@@ -358,64 +350,47 @@ with st.sidebar:
                 st.error(f"Error al procesar datos: {e}")
                 st.session_state.datos_procesados = False
 
-        # Filtros si hay datos procesados
         if st.session_state.datos_procesados:
             st.subheader("3. Filtra los datos")
-            
             df_proc = st.session_state.df_proc
             config = st.session_state.config
             
-            # Filtro por fecha
             fecha_min_data = df_proc[config['col_fecha']].min().date()
             fecha_max_data = df_proc[config['col_fecha']].max().date()
             
-            fecha_inicio, fecha_fin = st.date_input(
-                "Rango de fechas:", 
-                value=(fecha_min_data, fecha_max_data),
-                min_value=fecha_min_data, 
-                max_value=fecha_max_data,
-                key="date_filter"
-            )
-
-            # Filtro por tipo de incidente
+            fecha_inicio, fecha_fin = st.date_input("Rango de fechas:", value=(fecha_min_data, fecha_max_data), min_value=fecha_min_data, max_value=fecha_max_data, key="date_filter")
             tipos_disponibles = sorted(df_proc[config['col_tipo']].unique())
-            tipos_seleccionados = st.multiselect(
-                "Tipos de incidente a mostrar:",
-                options=tipos_disponibles,
-                default=tipos_disponibles,
-                key="tipo_filter"
-            )
+            tipos_seleccionados = st.multiselect("Tipos de incidente a mostrar:", options=tipos_disponibles, default=tipos_disponibles, key="tipo_filter")
 
-            # Aplicar filtros
+            # --- NUEVA OPCIÓN DE VISUALIZACIÓN ---
+            st.subheader("4. Estilo de Mapa")
+            usar_choropleth = st.checkbox("🎨 Colorear Colonias por Intensidad (Naranjas)", value=True, help="Colorea las colonias más fuerte según tengan más incidentes.")
+
             if fecha_inicio and fecha_fin and tipos_seleccionados:
                 df_filtrado = df_proc[
                     (df_proc[config['col_fecha']].dt.date >= fecha_inicio) &
                     (df_proc[config['col_fecha']].dt.date <= fecha_fin) &
                     (df_proc[config['col_tipo']].isin(tipos_seleccionados))
                 ]
-                
                 st.session_state.df_filtrado = df_filtrado
                 st.session_state.tipos_seleccionados = tipos_seleccionados
+                st.session_state.usar_choropleth = usar_choropleth
 
-# --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
-if (st.session_state.datos_procesados and 
-    'df_filtrado' in st.session_state and 
-    not st.session_state.df_filtrado.empty):
+# --- MOSTRAR EL MAPA ---
+if (st.session_state.datos_procesados and 'df_filtrado' in st.session_state and not st.session_state.df_filtrado.empty):
     
     df_final = st.session_state.df_filtrado
     config = st.session_state.config
     tipos_seleccionados = st.session_state.tipos_seleccionados
+    usar_intensidad = st.session_state.get('usar_choropleth', False)
     
     st.success(f"🗺️ Mostrando {len(df_final)} incidentes en el mapa.")
     
-    # Métricas
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Incidentes", f"{len(df_final)}")
     col2.metric("Tipos de Incidentes", f"{len(tipos_seleccionados)}")
-    col3.metric("Rango de Fechas", 
-               f"{df_final[config['col_fecha']].min().strftime('%d/%m/%Y')} - {df_final[config['col_fecha']].max().strftime('%d/%m/%Y')}")
+    col3.metric("Modo Intensidad", "Activado" if usar_intensidad else "Desactivado")
     
-    # Crear y mostrar mapa
     with st.spinner("Generando mapa..."):
         mapa_final = crear_mapa(
             df_final, 
@@ -425,33 +400,30 @@ if (st.session_state.datos_procesados and
             config['col_lon'], 
             config['col_colonia'],
             config['col_tipo'],
-            config['col_fecha']
+            config['col_fecha'],
+            usar_intensidad=usar_intensidad
         )
     
     if mapa_final:
         st_folium(mapa_final, width=1200, height=600, returned_objects=[], key="mapa_principal")
         
-        # Botón de descarga en el área principal
         st.markdown("---")
         st.subheader("💾 Descargar Mapa")
-        
         if st.button("📥 Descargar Mapa como HTML", key="download_button"):
             with st.spinner("Preparando archivo para descarga..."):
                 try:
                     map_buffer = BytesIO()
                     mapa_final.save(map_buffer, close_file=False)
                     map_buffer.seek(0)
-                    
                     st.download_button(
                         label="⬇️ Descargar Archivo HTML",
                         data=map_buffer.getvalue(),
-                        file_name="mapa_de_riesgos.html",
+                        file_name="mapa_riesgos_gradiente.html",
                         mime="text/html",
                         key="final_download"
                     )
                 except Exception as e:
                     st.error(f"Error al generar archivo de descarga: {e}")
-    
     else:
         st.error("❌ No se pudo generar el mapa. Verifica los datos y configuración.")
 
